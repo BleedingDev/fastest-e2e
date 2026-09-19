@@ -59,7 +59,9 @@ export class BrowserRuntime extends Context.Service<BrowserRuntime, {
       if (!process.env.TYPESAFE_API_KEY) return yield* Effect.fail(new BrowserError({ code: "credentials", reason: "Set TYPESAFE_API_KEY in the invoking process environment." }));
       return yield* withSession(session => worker(session, { op: testing ? "test" : "run", ...input }, input.timeoutMs ?? 120_000).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(RunResult)),
-        Effect.map(result => ({ ...result, durationMs: Math.round(performance.now() - started) })),
+        Effect.map(result => ({ ...result, durationMs: Math.round(performance.now() - started),
+          ...(testing ? { name: (input as TestInput).name, ...((input as TestInput).changeRef ? { changeRef: (input as TestInput).changeRef } : {}) } : {}),
+        })),
         Effect.mapError(error => error instanceof BrowserError ? error : protocolError()),
       ));
     });
@@ -94,7 +96,7 @@ export const start = (headed: boolean) => locked(() => io(() => host.startChrome
 export const stop = withSession(session => worker(session, { op: "stop" }, 15_000));
 
 export const install = locked(() => {
-  const env = { ...process.env, UV_PROJECT_ENVIRONMENT: path.join(host.home(), "worker-venv") };
+  const env: NodeJS.ProcessEnv = { ...process.env, UV_PROJECT_ENVIRONMENT: path.join(host.home(), "worker-venv") };
   delete env.TYPESAFE_API_KEY; delete env.TEXT_MODEL_API_KEY;
   return subprocess("uv", ["sync", "--project", path.join(host.packageRoot, "worker"), "--python", "3.12", "--no-dev", "--locked"],
     env, "", 180_000).pipe(Effect.as({ ok: true }));

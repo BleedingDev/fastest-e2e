@@ -43,6 +43,8 @@ export const CheckResult = Schema.Struct({
   actual: Schema.String,
 });
 export const RunResult = Schema.Struct({
+  name: Schema.optional(Schema.String),
+  changeRef: Schema.optional(Schema.String),
   status: Schema.Literals(["done", "passed", "failed", "blocked"]),
   verified: Schema.Boolean,
   durationMs: Schema.Number,

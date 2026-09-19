@@ -1,7 +1,7 @@
 {
   "name": "Save a display name",
   "url": "https://your-deployed-app.example/settings",
-  "goal": "Change the display name to E2E Example, save it, then reload the page.",
+  "goal": "Change the display name to E2E Example, save it, and stop when the page confirms it was saved.",
   "checks": [
     { "kind": "value", "selector": "input[name=displayName]", "value": "E2E Example" }
   ],
