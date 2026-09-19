@@ -35,7 +35,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def choose(page, _goal, history):
     kind = "fill" if not history else "click" if len(history) == 1 else None
-    action = next((a for a in page["actions"] if a["kind"] == kind), None) if kind else None
+    action = next((a for a in page["actions"] if a["kind"] == kind
+                   and (kind != "click" or "Save" in a["label"])), None) if kind else None
+    if kind and action is None:
+        raise AssertionError(f"Fixture action {kind!r} was not observed: {page['actions']}")
     choice = action["id"] if action else "DONE"
     return {"choice": choice, "probabilities": {choice: 1.0}, "confidence": 1.0, "latency_ms": 0,
             "operation": kind or "DONE", "target": choice, "usage": {}}

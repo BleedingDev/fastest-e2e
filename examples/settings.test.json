@@ -3,7 +3,16 @@
   "url": "https://your-deployed-app.example/settings",
   "goal": "Change the display name to E2E Example, save it, and stop when the page confirms it was saved.",
   "checks": [
-    { "kind": "value", "selector": "input[name=displayName]", "value": "E2E Example" }
+    {
+      "kind": "value",
+      "selector": "input[name=displayName]",
+      "value": "E2E Example"
+    },
+    {
+      "kind": "text",
+      "selector": "[role=status]",
+      "value": "Saved"
+    }
   ],
   "timeoutMs": 120000,
   "maxSteps": 30,
