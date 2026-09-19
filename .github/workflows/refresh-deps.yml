@@ -1,0 +1,88 @@
+name: Validate dependency refresh
+on:
+  push:
+    branches: [chore/update-latest-2026-09-20]
+permissions:
+  contents: read
+jobs:
+  refresh:
+    if: github.repository == 'BleedingDev/fastest-e2e'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24.21.0
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          version: 0.12.17
+          python-version: '3.12'
+      - name: Resolve current releases and exact package pins
+        run: |
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const view = (...args) => JSON.parse(execFileSync('npm', ['view', ...args, '--json'], { encoding: 'utf8', timeout: 60000 }));
+          const compare = (a, b) => {
+            const av = a.split(/[.-]/).filter(x => /^\d+$/.test(x)).map(Number);
+            const bv = b.split(/[.-]/).filter(x => /^\d+$/.test(x)).map(Number);
+            for (let i = 0; i < Math.max(av.length, bv.length); i++) {
+              const delta = (av[i] ?? 0) - (bv[i] ?? 0);
+              if (delta) return delta;
+            }
+            return 0;
+          };
+          const latest = list => {
+            const value = [...list].sort(compare).at(-1);
+            if (!value) throw new Error('No supported published version found');
+            return value;
+          };
+          const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
+          const before = structuredClone(manifest);
+          const versions = view('effect', 'versions');
+          const stable = versions.filter(v => /^4\.\d+\.\d+$/.test(v));
+          const effect = latest(stable.length ? stable : versions.filter(v => /^4\.\d+\.\d+-rc\.\d+$/.test(v)));
+          const adapter = view(`@effect/platform-node@${effect}`, 'version');
+          if (adapter !== effect) throw new Error('Effect adapter version does not match');
+          manifest.dependencies.effect = effect;
+          manifest.dependencies['@effect/platform-node'] = adapter;
+          const typescript = view('typescript', 'dist-tags.latest');
+          if (!/^\d+\.\d+\.\d+$/.test(typescript)) throw new Error('TypeScript latest is not stable');
+          manifest.devDependencies.typescript = typescript;
+          const nodeTypes = view('@types/node@24', 'version');
+          manifest.devDependencies['@types/node'] = latest(Array.isArray(nodeTypes) ? nodeTypes : [nodeTypes]);
+          writeFileSync('package.json', JSON.stringify(manifest, null, 2) + '\n');
+          console.log(JSON.stringify({ before: { ...before.dependencies, ...before.devDependencies }, after: { ...manifest.dependencies, ...manifest.devDependencies } }, null, 2));
+          JS
+          npm update --ignore-scripts
+          uv lock --project worker --upgrade
+          git diff --stat
+          git diff -- package.json worker/pyproject.toml
+      - name: Install refreshed locked dependencies
+        run: |
+          npm ci --ignore-scripts
+          uv sync --project worker --locked
+      - name: Typecheck and test CLI, MCP, and worker
+        run: npm run check
+      - name: Real Chrome smoke test, without model API calls
+        run: uv run --project worker --no-sync python worker/tests/browser_smoke.py
+      - name: Public CLI lifecycle, without model API calls
+        run: node test/lifecycle.smoke.mjs
+      - name: Preserve only the tested dependency files on the update branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git add -- package.json package-lock.json worker/uv.lock
+          if git diff --cached --quiet; then
+            echo 'Dependency pins and lockfiles are already current.'
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'chore: update and lock tested dependencies'
+          header=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$header"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $header" push origin HEAD:refs/heads/chore/update-latest-2026-09-20
