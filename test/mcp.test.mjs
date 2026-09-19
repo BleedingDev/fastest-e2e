@@ -31,6 +31,8 @@ test("MCP negotiates stdio and lists high-level tools without script execution b
     assert.deepEqual(listed.result.tools.map(tool => tool.name).sort(), ["browser_close", "browser_doctor", "browser_inspect", "browser_run", "browser_test"]);
     const result = await request("tools/call", { name: "browser_doctor", arguments: {} });
     assert.ok(result.result, JSON.stringify(result));
+    assert.notEqual(result.result.isError, true, JSON.stringify(result));
+    assert.equal(typeof result.result.structuredContent.connected, "boolean");
     assert.deepEqual(invalidLines, [], diagnostics);
   } finally {
     child.kill("SIGTERM");

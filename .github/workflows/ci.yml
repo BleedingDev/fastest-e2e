@@ -28,3 +28,6 @@ jobs:
       - name: Real Chrome smoke test, without model API calls
         if: ${{ !cancelled() }}
         run: uv run --project worker --no-sync python worker/tests/browser_smoke.py
+      - name: Public CLI lifecycle, without model API calls
+        if: ${{ !cancelled() }}
+        run: node test/lifecycle.smoke.mjs
