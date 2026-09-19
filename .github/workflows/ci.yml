@@ -3,41 +3,28 @@ on:
   push:
   pull_request:
 permissions:
-  contents: write
+  contents: read
 jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
       - uses: astral-sh/setup-uv@v6
         with:
+          version: 0.12.17
           python-version: '3.12'
-      - name: Install exact direct dependencies
+      - name: Install locked dependencies
         run: |
-          if test -f package-lock.json; then npm ci --ignore-scripts; else npm install --ignore-scripts; fi
-          if test -f worker/uv.lock; then uv sync --project worker --locked; else uv sync --project worker; fi
-      - name: Preserve resolved locks
-        uses: actions/upload-artifact@v4
-        with:
-          name: dependency-locks
-          path: |
-            package-lock.json
-            worker/uv.lock
-      - name: Commit initial dependency locks
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          if ! git ls-files --error-unmatch package-lock.json worker/uv.lock >/dev/null 2>&1; then
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git add -- package-lock.json worker/uv.lock
-            git commit -m 'chore: lock the verified dependency graph'
-            git push origin HEAD:main
-          fi
+          npm ci --ignore-scripts
+          uv sync --project worker --locked
       - name: Typecheck and test CLI, MCP, and worker
         run: npm run check
       - name: Real Chrome smoke test, without model API calls
+        if: ${{ !cancelled() }}
         run: uv run --project worker --no-sync python worker/tests/browser_smoke.py

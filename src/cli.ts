@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import * as fs from "node:fs/promises";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Console, Effect, Layer, Option, Schema } from "effect";
+import { Cause, Console, Effect, Layer, Logger, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import { BrowserError, exitCode, TestInput } from "./contracts.js";
 import { BrowserRuntime, init, install, io, start, stop } from "./runtime.js";
@@ -62,5 +62,8 @@ export const command = Command.make("fastest-e2e").pipe(
 NodeRuntime.runMain(Command.runWith(command, { version: "0.1.0" })(process.argv.slice(2)).pipe(
   Effect.catchTag("BrowserError", error => emit({ error: { code: error.code, reason: error.reason } }).pipe(
     Effect.andThen(Effect.sync(() => { process.exitCode = 2; })))),
+  Effect.catchCause(cause => Console.error(Cause.pretty(cause)).pipe(
+    Effect.andThen(Effect.sync(() => { process.exitCode = 2; })))),
+  Effect.provideService(Logger.LogToStderr, true),
   Effect.provide(Layer.provideMerge(BrowserRuntime.layer, NodeServices.layer)),
 ));
