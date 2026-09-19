@@ -4,7 +4,8 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from types import ModuleType
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bridge
@@ -105,6 +106,18 @@ class BridgeTests(unittest.TestCase):
     def test_verification_requires_every_result(self):
         with self.assertRaises(bridge.BridgeError):
             bridge.verify_checks(self.cdp, "session", [{"kind": "text", "value": "Saved"}], 0)
+
+    def test_browser_shutdown_also_retires_its_daemon(self):
+        harness, admin = ModuleType("browser_harness"), ModuleType("browser_harness.admin")
+        harness.helpers = Mock()
+        admin.ensure_daemon, admin.restart_daemon = Mock(), Mock()
+        admin.daemon_alive = Mock(return_value=False)
+        with patch.dict(sys.modules, {"browser_harness": harness, "browser_harness.admin": admin}):
+            with patch.object(bridge, "verify_connection", side_effect=[None, bridge.BridgeError("session", "closed")]):
+                self.assertEqual(bridge.dispatch({"op": "stop"}), {"ok": True})
+        harness.helpers.cdp.assert_called_once_with("Browser.close")
+        admin.restart_daemon.assert_called_once_with()
+        admin.daemon_alive.assert_called_once_with()
 
     def test_model_errors_do_not_leak_credentials_or_pass(self):
         class BrokenAgent(FakeAgent):

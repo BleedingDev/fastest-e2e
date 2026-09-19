@@ -198,7 +198,7 @@ def execute_agent(request: dict, agent_type, cdp) -> dict:
 
 def dispatch(request: dict) -> dict:
     verify_connection()
-    from browser_harness.admin import ensure_daemon
+    from browser_harness.admin import ensure_daemon, restart_daemon, daemon_alive
     from browser_harness import helpers
     ensure_daemon()
     cdp = helpers.cdp
@@ -213,6 +213,11 @@ def dispatch(request: dict) -> dict:
             try:
                 verify_connection()
             except BridgeError:
+                # Chrome shutdown must also retire this browser generation's
+                # daemon. The upstream function only stops it despite its name.
+                restart_daemon()
+                if daemon_alive():
+                    raise BridgeError("session", "Chrome stopped, but its Browser Harness daemon is still running.")
                 return {"ok": True}
             time.sleep(0.1)
         raise BridgeError("session", "Chrome has not confirmed shutdown.")

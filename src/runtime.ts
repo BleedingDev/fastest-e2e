@@ -93,7 +93,7 @@ export class BrowserRuntime extends Context.Service<BrowserRuntime, {
 export const init = (chrome?: string, profile?: string) => locked(() => io(() => host.initialize(chrome, profile)));
 export const start = (headed: boolean) => locked(() => io(() => host.startChrome(headed)).pipe(
   Effect.map(({ browserId, profileDir, reused }) => ({ browserId, profileDir, reused }))));
-export const stop = withSession(session => worker(session, { op: "stop" }, 15_000));
+export const stop = withSession(session => worker(session, { op: "stop" }, 30_000));
 
 export const install = locked(() => {
   const env: NodeJS.ProcessEnv = { ...process.env, UV_PROJECT_ENVIRONMENT: path.join(host.home(), "worker-venv") };
