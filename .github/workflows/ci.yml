@@ -1,0 +1,33 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+      - name: Install exact direct dependencies
+        run: |
+          if test -f package-lock.json; then npm ci --ignore-scripts; else npm install --ignore-scripts; fi
+          if test -f worker/uv.lock; then uv sync --project worker --locked; else uv sync --project worker; fi
+      - name: Preserve resolved locks
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-locks
+          path: |
+            package-lock.json
+            worker/uv.lock
+      - name: Typecheck and test CLI, MCP, and worker
+        run: npm run check
+      - name: Real Chrome smoke test, without model API calls
+        run: uv run --project worker --no-sync python worker/tests/browser_smoke.py

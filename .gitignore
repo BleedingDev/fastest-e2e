@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.pyc
+.fastest-e2e/
+*.log
+coverage/
+artifacts/

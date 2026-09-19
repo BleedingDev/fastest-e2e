@@ -1,0 +1,26 @@
+{
+  "name": "@bleedingdev/fastest-e2e",
+  "version": "0.1.0",
+  "description": "Browser automation and evidence-based E2E tests for coding agents",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "fastest-e2e": "dist/cli.js" },
+  "files": ["dist", "worker", "skills", "docs", "examples", "README.md", "LICENSE"],
+  "engines": { "node": ">=24.18.0" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "test:python": "python3 -m unittest discover -s worker/tests -v",
+    "check": "npm run typecheck && npm test && npm run test:python",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0-rc.116",
+    "effect": "4.0.0-rc.116"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.0",
+    "typescript": "7.0.2"
+  }
+}

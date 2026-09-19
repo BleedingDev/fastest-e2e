@@ -1,0 +1,13 @@
+{
+  "name": "Save a display name",
+  "url": "https://your-deployed-app.example/settings",
+  "goal": "Change the display name to E2E Example, save it, then reload the page.",
+  "checks": [
+    { "kind": "value", "selector": "input[name=displayName]", "value": "E2E Example" }
+  ],
+  "timeoutMs": 120000,
+  "maxSteps": 30,
+  "checkTimeoutMs": 5000,
+  "keepTab": true,
+  "changeRef": "Replace with the PR or feature reference; this is metadata, not deployment proof."
+}
