@@ -1,0 +1,8 @@
+{
+  "name": "Account settings are available",
+  "url": "https://your-app.example/settings",
+  "goal": "Open account settings and read the heading. Leave all settings unchanged.",
+  "checks": [
+    { "kind": "text", "selector": "h1", "value": "Account settings" }
+  ]
+}

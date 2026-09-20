@@ -1,20 +1,14 @@
 ---
 name: setup-fastest-e2e
-description: Install, configure, or repair fastest-e2e, its dedicated Chrome session, and its browser-use and browser-test skills.
+description: Install or repair fastest-e2e, its dedicated Chrome session, and skill or MCP registration in a coding agent.
 ---
 
 # Setup fastest-e2e
 
-Read `../../docs/setup.md` before changing installation or session configuration.
+Read `../../docs/setup.md` for installation and client configuration.
 
-Inspect the existing installation, `fastest-e2e doctor`, the selected agent's skill discovery settings, and any existing fastest-e2e configuration. Preserve working settings.
-
-Install the pinned dependencies and CLI. Register the three skills in the agent's configured skill directory. Use symlinks to this checkout so relative references resolve; verify discovery rather than assuming a universal global directory.
-
-Create a dedicated Chrome user-data directory with `fastest-e2e init`. Confirm the profile choice before adopting existing browser data. Run `fastest-e2e install` to provision the worker.
-
-Have the user supply model keys through their shell or credential manager. Never request keys in chat or commit them. Explain that page context goes to the configured model providers.
-
-Start headed Chrome for the user to sign into only the intended accounts. After they finish, stop it and start headless when requested.
-
-Finish when `doctor` reports the intended connected browser, installed worker, and model-key presence, and the agent discovers both operational skills. Report anything still missing.
+1. Inspect the existing CLI, `fastest-e2e doctor` JSON, configured home/profile, and the target agent's skill settings. Preserve working configuration. Repair only missing or broken parts.
+2. Follow the documented install. Use `fastest-e2e init` for a new dedicated profile and `fastest-e2e install` for the locked worker. Confirm before adopting existing browser data; keep the personal profile separate.
+3. Have the user provide model keys through the invoking shell or credential manager, not chat. Explain that page context goes to the model providers. Start headed Chrome for login to the intended accounts. Stop it before starting the same profile headless.
+4. Register all three skills using the client's supported search path or checkout symlinks. Verify that it discovers them and can read their relative references. Configure MCP only when requested, with the same `FASTEST_E2E_HOME` and credentials as the CLI.
+5. Finish when `doctor` reports `configured`, `workerInstalled`, `connected`, `jevKeyPresent`, and `textKeyPresent` as true and skill discovery works. Its exit code alone is insufficient; presence does not prove a key is valid. Report any missing step rather than calling setup complete.
