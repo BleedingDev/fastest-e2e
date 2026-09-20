@@ -28,7 +28,7 @@ test("MCP negotiates stdio and lists high-level tools without script execution b
     assert.ok(initialized.result, JSON.stringify(initialized));
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
     const listed = await request("tools/list", {});
-    assert.deepEqual(listed.result.tools.map(tool => tool.name).sort(), ["browser_close", "browser_doctor", "browser_inspect", "browser_run", "browser_test"]);
+    assert.deepEqual(listed.result.tools.map(tool => tool.name).sort(), ["browser_close", "browser_doctor", "browser_inspect", "browser_reconcile", "browser_resume", "browser_run", "browser_screenshot", "browser_test", "browser_verify"]);
     const result = await request("tools/call", { name: "browser_doctor", arguments: {} });
     assert.ok(result.result, JSON.stringify(result));
     assert.notEqual(result.result.isError, true, JSON.stringify(result));

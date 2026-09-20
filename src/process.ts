@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { Effect } from "effect";
+import { registerWorker } from "./host.js";
 import { BrowserError } from "./contracts.js";
 
 interface Running {
@@ -15,6 +16,9 @@ export function subprocess(command: string, args: readonly string[], env: NodeJS
   const launch = Effect.try({
     try: (): Running => {
       const child = spawn(command, [...args], { env, stdio: "pipe", windowsHide: true });
+      if (child.pid && env.FASTEST_E2E_LEASE_FILES) {
+        try { registerWorker(child.pid, env); } catch (e) { child.kill("SIGKILL"); throw e; }
+      }
       const closed = new Promise<void>(resolve => child.once("close", () => resolve()));
       const result = new Promise<string>((resolve, reject) => {
         const chunks: Buffer[] = [];
@@ -25,7 +29,7 @@ export function subprocess(command: string, args: readonly string[], env: NodeJS
         child.stdin.on("error", () => { /* Early process exit is reported below. */ });
         child.stdout.on("data", (data: Buffer) => {
           size += data.length;
-          if (size > 2_000_000) { reason = "output_limit"; child.kill("SIGKILL"); }
+          if (size > 12_000_000) { reason = "output_limit"; child.kill("SIGKILL"); }
           else chunks.push(data);
         });
         child.stderr.resume(); // Never mix dependency/model logs into JSON or MCP stdout.

@@ -2,15 +2,16 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
-import { constants } from "node:fs";
+import { constants, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { BrowserError } from "./contracts.js";
+import { atomic } from "./journal.js";
 
 export const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 export const home = () => path.resolve(process.env.FASTEST_E2E_HOME ?? path.join(os.homedir(), ".fastest-e2e"));
-export interface Configuration { version: 1; chromeExecutable: string; profileDir: string }
+export interface Configuration { version: 1; chromeExecutable: string; profileDir: string; visionEnabled?: boolean }
 export interface Session { browserId: string; wsUrl: string; namespace: string; profileDir: string }
 
 export async function configuration(): Promise<Configuration> {
@@ -19,7 +20,7 @@ export async function configuration(): Promise<Configuration> {
   catch { throw new BrowserError({ code: "setup", reason: "Run fastest-e2e init first. Configuration is missing or invalid." }); }
   const config = value as Partial<Configuration> | null;
   if (config?.version !== 1 || typeof config.chromeExecutable !== "string" ||
-      typeof config.profileDir !== "string" || !path.isAbsolute(config.profileDir)) {
+      typeof config.profileDir !== "string" || !path.isAbsolute(config.profileDir) || (config.visionEnabled !== undefined && typeof config.visionEnabled !== "boolean")) {
     throw new BrowserError({ code: "setup", reason: "Invalid config.json. Expected version 1 and an absolute profileDir." });
   }
   return config as Configuration;
@@ -105,7 +106,7 @@ export async function connect(): Promise<Session> {
 export function workerEnvironment(session: Session, parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = { ...parent };
   for (const name of Object.keys(env)) {
-    if (/^(BU_|BH_|BROWSER_HARNESS|BROWSER_USE|FASTEST_E2E_(TARGET|BROWSER))/.test(name)) delete env[name];
+    if (/^(DEBUG$|LANGCHAIN_|LANGFUSE_|MIDSCENE_|BU_|BH_|BROWSER_HARNESS|BROWSER_USE|FASTEST_E2E_(TARGET|BROWSER|JOURNAL|CALLER|LEASE))/.test(name)) delete env[name];
   }
   const harnessHome = path.join(home(), "harness", session.namespace);
   return {
@@ -120,24 +121,60 @@ export function workerEnvironment(session: Session, parent: NodeJS.ProcessEnv = 
     BH_DOMAIN_SKILLS: "0",
     FASTEST_E2E_BROWSER_ID: session.browserId,
     FASTEST_E2E_TARGET_DIR: path.join(home(), "targets", session.namespace),
+    FASTEST_E2E_CALLER_PID: String(process.pid),
+    FASTEST_E2E_LEASE_FILES: [path.join(home(), "session.lock"), path.join(session.profileDir, ".fastest-e2e.lock")].map(file => encodeURIComponent(file)).join(path.delimiter),
     PYTHONUNBUFFERED: "1",
     PYTHONDONTWRITEBYTECODE: "1",
   };
 }
 
-export async function acquireLock(): Promise<() => Promise<void>> {
-  await fs.mkdir(home(), { recursive: true, mode: 0o700 });
-  const lockPath = path.join(home(), "session.lock");
+export function alive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid < 1) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+interface Lease { pid: number; token: string; workers: number[] }
+async function lockFile(lockPath: string): Promise<() => Promise<void>> {
   const token = randomUUID();
   let handle;
-  try { handle = await fs.open(lockPath, "wx", 0o600); }
-  catch { throw new BrowserError({ code: "busy", reason: `Session is locked. If a previous process crashed, verify it stopped before removing ${lockPath}.` }); }
-  await handle.writeFile(JSON.stringify({ pid: process.pid, token }));
-  await handle.close();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { handle = await fs.open(lockPath, "wx", 0o600); break; }
+    catch {
+      const busy = () => new BrowserError({ code: "busy", reason: "The configured profile is locked and in use by another caller or worker. No concurrent action was started." });
+      if (attempt) throw busy();
+      let reaper;
+      try { reaper = await fs.open(`${lockPath}.recovery`, "wx", 0o600); } catch { throw busy(); }
+      try {
+        const old = JSON.parse(await fs.readFile(lockPath, "utf8")) as Lease;
+        if (!old.token || !Number.isInteger(old.pid) || alive(old.pid) || old.workers?.some(alive)) throw busy();
+        await fs.unlink(lockPath);
+      } finally { await reaper.close(); await fs.unlink(`${lockPath}.recovery`); }
+    }
+  }
+  if (!handle) throw new BrowserError({ code: "busy", reason: "Could not acquire the profile lease." });
+  await handle.writeFile(JSON.stringify({ pid: process.pid, token, workers: [] }));
+  await handle.sync(); await handle.close();
   return async () => {
-    const owner = JSON.parse(await fs.readFile(lockPath, "utf8")) as { token: string };
-    if (owner.token === token) await fs.unlink(lockPath);
+    try { const owner = JSON.parse(await fs.readFile(lockPath, "utf8")) as Lease;
+      if (owner.token === token) await fs.unlink(lockPath);
+    } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
   };
+}
+export async function acquireLock(): Promise<() => Promise<void>> {
+  await fs.mkdir(home(), { recursive: true, mode: 0o700 });
+  const releaseHome = await lockFile(path.join(home(), "session.lock"));
+  try {
+    const profile = await configuration().then(c => fs.realpath(c.profileDir), () => undefined);
+    const releaseProfile = profile ? await lockFile(path.join(profile, ".fastest-e2e.lock")) : async () => {};
+    return async () => { try { await releaseProfile(); } finally { await releaseHome(); } };
+  } catch (e) { await releaseHome(); throw e; }
+}
+export function registerWorker(pid: number, env: NodeJS.ProcessEnv): void {
+  for (const encoded of (env.FASTEST_E2E_LEASE_FILES ?? "").split(path.delimiter).filter(Boolean)) {
+    const file = decodeURIComponent(encoded);
+    const lease = JSON.parse(readFileSync(file, "utf8")) as Lease;
+    if (lease.pid !== process.pid) throw new BrowserError({ code: "lease", reason: "Worker does not own the execution lease." });
+    lease.workers = lease.workers.filter(alive); lease.workers.push(pid); atomic(file, lease);
+  }
 }
 
 export async function startChrome(headed: boolean): Promise<Session & { reused: boolean }> {

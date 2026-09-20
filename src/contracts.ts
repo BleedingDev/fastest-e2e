@@ -9,9 +9,12 @@ export class BrowserError extends Schema.TaggedError<BrowserError>()("BrowserErr
 }
 
 export const Check = Schema.Struct({
-  kind: Schema.Literals(["text", "url", "value", "checked", "count"]),
+  kind: Schema.Literals(["text", "url", "value", "checked", "count", "visible", "visual"]),
   value: Schema.String,
   selector: Schema.optional(Schema.String),
+  frames: Schema.optional(Schema.Array(Schema.String)),
+  shadow: Schema.optional(Schema.Literals(["none", "open", "closed"])),
+  id: Schema.optional(Schema.String),
 });
 export type Check = typeof Check.Type;
 
@@ -96,16 +99,16 @@ export function validateTest(input: TestInput): void {
     throw new BrowserError({ code: "input", reason: "checkTimeoutMs must be between 0 and 30,000." });
   }
   for (const check of input.checks) {
-    if (["value", "checked", "count"].includes(check.kind) && !check.selector?.trim()) {
+    if (["value", "checked", "count", "visible"].includes(check.kind) && !check.selector?.trim()) {
       throw new BrowserError({ code: "input", reason: `${check.kind} requires a CSS selector.` });
     }
-    if (check.kind === "checked" && !["true", "false"].includes(check.value)) {
+    if ((check.kind === "checked" || check.kind === "visible") && !["true", "false"].includes(check.value)) {
       throw new BrowserError({ code: "input", reason: "checked expects 'true' or 'false'." });
     }
     if (check.kind === "count" && !/^(0|[1-9][0-9]*)$/.test(check.value)) {
       throw new BrowserError({ code: "input", reason: "count expects a nonnegative integer string." });
     }
-    if ((check.kind === "text" || check.kind === "url") && !check.value.trim()) {
+    if ((["text", "url", "visual"].includes(check.kind)) && !check.value.trim()) {
       throw new BrowserError({ code: "input", reason: "text and url expectations cannot be empty." });
     }
   }
