@@ -40,7 +40,7 @@ export async function scoped(page: Page, s: Scoped): Promise<{ root: Page | Fram
   let root: Page | FrameLocator = page;
   for (const selector of s.frames ?? []) {
     const iframe = root.locator(css(selector, s.shadow));
-    if (await iframe.count() === 0) await iframe.first().waitFor({ state: "attached" }).catch(() => undefined);
+    if (await iframe.count() === 0) await iframe.first().waitFor({ state: "attached", timeout: 3_000 }).catch(() => undefined);
     if (await iframe.count() !== 1 || !(await iframe.evaluate(e => /^(IFRAME|FRAME)$/.test(e.tagName)))) {
       throw new BrowserError({ code: "unsupported_scope", reason: "The frame path did not identify exactly one frame. Absence inside it is unknown." });
     }
@@ -111,7 +111,7 @@ async function runSteps(page: Page, journal: Journal, job: PageJob, snap: () => 
     const index = (job.startIndex ?? 0) + offset;
     const value = valueFor(s, journal, rebuilding ? retained : journal.recoveryFields());
     const { locator } = await scoped(page, s);
-    if (["click", "fill", "press", "select", "check"].includes(s.kind) && await locator.count() === 0) await locator.first().waitFor({ state: "attached" });
+    if (["click", "fill", "press", "select", "check"].includes(s.kind) && await locator.count() === 0) await locator.first().waitFor({ state: "attached", timeout: 3_000 });
     if (["click", "fill", "press", "select", "check"].includes(s.kind) && await locator.count() !== 1) {
       throw new BrowserError({ code: "ambiguous_target", reason: "Action requires one matching control. Inspect the scoped page; no action was dispatched." });
     }
