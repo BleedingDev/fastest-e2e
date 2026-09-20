@@ -37,3 +37,5 @@ Browser Harness helpers are pre-imported; inspect installed signatures before us
 MCP `browser_harness` requires explicit `mcp --allow-scripts`; normal vision and scoped steps do not. Scripts have full local permissions and are not journaled per action. They can invalidate a run checkpoint; inspect afterward and do not claim their side effects were automatically verified.
 
 Popup opener IDs are recorded, then execution stops rather than silently following or rewriting navigation. Registered popup targets can use legacy target inspection or trusted scripting. Autonomous file-chooser path selection is disabled; use explicit, reviewed scripts for permitted uploads. Closed-root DOM access, browser chrome/native desktop controls, and generic lossless restore are unsupported. Report the limitation rather than faking a pass.
+
+Explicit reconstruction or restart retires the abandoned owned task tab before opening its replacement. The original run evidence and failed attempt remain. It never retires unrelated tabs.

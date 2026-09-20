@@ -158,6 +158,22 @@ function attempt(j: Journal, session: host.Session, mode: "new" | "resume" | "re
     cdp = yield* io(() => Cdp.open(session));
     let sid: string;
     if (mode !== "new" && before.pendingAction && before.pendingSafe && !before.unresolvedEffect) j.append("safe_repeat", { originalAction: before.pendingAction, mode });
+    if ((mode === "reconstruct" || mode === "restart") && before.tabRetained && before.browserId === session.browserId) {
+      // Explicit recovery abandons this document. A crashed page can block
+      // Playwright attachment to its replacement. Never retire user tabs.
+      yield* io(async () => {
+        const registry = path.join(host.home(), "targets", session.namespace, `${before.targetId}.json`);
+        const owner = JSON.parse(await fs.promises.readFile(registry, "utf8"));
+        if (owner.targetId !== before.targetId || owner.browserId !== session.browserId) throw new BrowserError({ code: "target", reason: "Cannot retire a tab without its matching ownership record." });
+        const targets = await cdp!.send<{ targetInfos: { targetId: string }[] }>("Target.getTargets");
+        if (targets.targetInfos.some(t => t.targetId === before.targetId)) {
+          const result = await cdp!.send<{ success: boolean }>("Target.closeTarget", { targetId: before.targetId });
+          if (!result.success) throw new BrowserError({ code: "target", reason: "The abandoned task tab could not be retired." });
+        }
+        j.append("closed", { targetId: before.targetId, reason: "explicit_recovery", mode });
+        fs.rmSync(registry, { force: true });
+      });
+    }
     if (mode === "new" || mode === "reconstruct" || mode === "restart") sid = yield* io(() => createTarget(cdp!, session, j, mode !== "reconstruct", deadline));
     else sid = yield* io(() => ownedSession(cdp!, session, j));
     if (mode === "reconstruct") {

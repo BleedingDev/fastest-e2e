@@ -66,7 +66,10 @@ try {
   await cdp.send('Page.crash', {}, sid).catch(() => {}); await cdp.close();
   process.env.FE2E_TEST_INPUT = 'Continued';
   const rendererResult = await run(resumeRun({ runId: renderer.runId, expectedRevision: new Journal(f.directory, renderer.runId).state().revision, mode: 'reconstruct' }));
-  assert.equal(rendererResult.status, 'passed', JSON.stringify(rendererResult)); passed.push('real renderer crash and explicit reconstruction');
+  assert.equal(rendererResult.status, 'passed', JSON.stringify(rendererResult));
+  const afterCrash = await Cdp.open(f.session);
+  assert.equal((await afterCrash.send('Target.getTargets')).targetInfos.some(t => t.targetId === renderer.targetId), false, 'explicit reconstruction retires its abandoned task tab');
+  await afterCrash.close(); passed.push('real renderer crash, owned-tab retirement, and explicit reconstruction');
 
   delete process.env.FE2E_TEST_INPUT;
   const browserCrash = await run(runTask(makeHalf('Browser crash'), true)); const oldId = browserCrash.browserId;
