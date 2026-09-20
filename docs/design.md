@@ -1,121 +1,74 @@
-# System design
+# Agent workflow design
 
-Status: proposed. Baseline reviewed at `b3b1500`. Read [the vision](../VISION.md) for the objective, [the agent contract](agent-contract.md) for interaction details, and [the implementation plan](implementation-plan.md) for delivery gates.
+Proposed, not shipped. [README](../README.md) documents the current CLI. This document replaces the separate vision, agent-contract, learning, and implementation-plan documents.
 
-## Current baseline
+## One record of the work, not a browser snapshot
 
-The [runtime](../src/runtime.ts) runs a pinned Python worker per request. The [host](../src/host.ts) binds it to the configured Chrome generation and locks one configured home. The [worker](../worker/bridge.py) registers task tabs and checks the top-level document. Runs return a tab ID and status, not a durable execution record or extracted answer. Browser Harness fallback is trusted script execution. There is no autonomous Midscene integration or native MCP screenshot result yet.
-
-Those are useful building blocks. They leave progress, recovery decisions, and evidence interpretation in the outer agent's conversation. The target below moves durable facts into the runtime without moving general product reasoning there.
-
-## Ownership follows the task
+A run records intent, progress, evidence, uncertainty, and next actions across engine switches and agent context loss. **Persisting a run does not persist the application's live state.**
 
 ```text
-Task specification              What outcome, scope, and evidence are required?
-  Run                           What has happened and what remains?
-    Checkpoint                  What can be continued from this observed state?
-      Scoped operations         Observe, act, extract, and check on owned targets.
-        Executor adapter        Jev, Playwright recipe, or Midscene.
-          Session lease         Exact profile, Chrome generation, and task tabs.
+Task + expectations
+  Run: attempts, evidence, recovery status, remaining budget
+    Executor: Jev / scoped Playwright / Midscene
+      Owned Chrome profile, tab, and live document
 ```
 
-Evidence refers back to a run, checkpoint, target, and requirement. Recipes are reusable procedures selected by the run, not owners of the browser or definitions of success.
+CLI and MCP share Effect services and upstream engines. A local journal records permitted intent and dispatch/completion receipts. Flush before dispatch; incomplete receipts mean uncertainty, not permission to retry. Deduplication and profile-scoped leases prevent competing dispatch, not exactly-once website effects.
 
-| Owner | Owns | Does not own |
-| --- | --- | --- |
-| Coding agent | Requirement interpretation, case selection, deployment evidence, diagnosis | Low-level control between every routine click |
-| Effect runtime | Validated task specification, run state, budgets, session lease, routing, result assembly | A replacement browser engine or model reasoning trace |
-| Executor adapter | Execution through its upstream library, progress receipts, cancellation | Permission changes, success criteria, another profile |
-| Verifier | Fresh checks with explicit scope and evidence type | Actions that repair the application to satisfy a check |
-| Recipe store | Reviewed, parameterized knowledge and applicability | Credentials, permissions, authoritative current page state |
+## Recovery after interruption
 
-Use Effect Schema for shared contracts and Context services for these responsibilities. Keep CLI and MCP as transport adapters to the same handlers. Keep a single package until an independently deployable component earns a split.
+Stop dispatch. Distinguish client disconnection from page/browser crash. Revalidate account, browser, owned target, document generation, and task-specific live state. An unchanged URL or tab ID is insufficient: the same tab can reload and lose its form. Unproven continuity is unknown.
 
-## A run outlives an invocation
-
-Create a run ID and persist its validated intent before the first browser action. Keep the current browser-generation ID, owned targets, expected outcomes, requested extraction, attempts, checkpoints, mutation receipts, budget usage, and evidence references under that run.
-
-Use a local append-only event file and atomically replaced summary. Start with files, not a workflow service or database. Record observable decisions and action receipts, not hidden model reasoning. Events need sequence numbers and input/schema versions so summaries can be rebuilt and incompatible records rejected explicitly.
-
-A paused or interrupted run remains inspectable after the CLI exits or the coding agent loses its context. It is resumable only if the original live browser state can be validated. Browser restart preserves the record, not a promise of restoring in-memory tab state.
-
-Journal before an action can be dispatched and record its completion afterward. If a process dies between those writes, mark the action uncertain. Observation may resolve uncertainty; replay cannot. Request deduplication prevents duplicate runtime dispatch for an identical request ID. It cannot promise exactly-once side effects on a website.
-
-A request ID is scoped to the configured home and canonical input digest. Reusing it with different input is a conflict. A duplicate completed request returns its recorded result; a duplicate active request returns the run handle, not another execution.
-
-## Checkpoints and exclusive control
-
-A checkpoint identifies the reached UI state, completed subgoal, unchanged remaining goal, evidence, target lineage, and budget consumed. Prefer semantic boundaries such as an opened dialog or a confirmed save. Do not require the outer agent to author a click-by-click plan.
-
-Hold one exclusive lease per canonical profile and Chrome generation during an execution segment, including an engine handoff. The existing home lock alone does not protect the same profile configured under two homes. Detect and reject that collision. Releasing an invocation's lease does not transfer ownership of its tabs.
-
-Between invocations, a person may change a tab. Resume validates browser identity, target ownership, checkpoint preconditions, and new observations. A stored revision is a journal version, not proof that the live DOM is unchanged. Re-resolve locators and reject stale image coordinates after navigation, scrolling, layout changes, or an invalid screenshot reference.
-
-Jev relinquishes control before another adapter acts. A popup may join the run only through verified opener lineage and allowed navigation context. Never choose a page by array order or URL alone. Detaching an adapter must leave Chrome and unrelated tabs open.
-
-## Choose the cheapest capable executor
-
-Selection uses validated task requirements, current capabilities, live state, and approved recipe applicability. The policy is conditional, not a mandatory sequence of paid trials.
-
-```text
-if a reviewed UI recipe matches and its preconditions hold:
-  run the recipe and verify fresh evidence
-else if a known interaction is directly supported by scoped Playwright operations:
-  use those operations without a visual model
-else if the requested goal is supported by Jev:
-  run Jev
-else if vision is configured, allowed, and suitable:
-  run Midscene on the same owned target
-else:
-  return the precise missing capability and safe next actions
-```
-
-Ordinary iframe or open-shadow-root targeting does not itself require vision. Use Midscene for rendered controls whose useful identity is visual, or when a bounded semantic workflow needs its visual planner. Never infer capability support solely from the presence of an iframe or canvas somewhere on the page.
-
-`auto`, `jev`, and `vision` remain the proposed public policies. `auto` may skip a predictably unsuitable engine and may use a validated recipe. An explicit engine selection does not silently switch engines. Record the selected executor and reason. Load Playwright/Midscene only for operations that need them.
-
-The adapter must expose enough supported hooks to meter steps and report dispatch uncertainty. If that cannot be demonstrated for a pinned upstream version, limit it to bounded calls and disable automatic continuation across ambiguous boundaries. Do not invent reliable classification by parsing a model's prose.
-
-### Recovery rules
-
-| Observation | Response |
+| Recovery | Required evidence and behavior |
 | --- | --- |
-| Unsupported interaction, no unresolved mutation, suitable authorized engine available | Continue the remaining subgoal on the same run within the remaining budget |
-| Lost response after a potentially mutating action | Mark uncertain; inspect before offering continuation |
-| Assertion mismatch after completed execution | Preserve failure; diagnose without another agent trying to make it pass |
-| Missing provider, expired login, unsupported scope, or exhausted budget | Return a typed blocker and a concrete remedy |
-| User cancellation or lost browser identity | Stop dispatch; never escalate to another engine |
+| **Resume** | The relevant live state survived and there is no unresolved mutation. Continue remaining work without reload or replay. |
+| **Reconstruct** | State was lost, but a validated UI route and permitted inputs or an application draft are available. Rebuild only the missing state, then verify it. This is a new attempt, not restoration of the old document. |
+| **Restart** | Reconstruction is unavailable, but the workflow can safely start again. Start a linked attempt from the beginning within existing authorization and remaining budget. |
+| **Blocked** | Inputs are unavailable or must not be retained, reconstruction is unsafe, or an earlier effect is uncertain. State exactly what was lost and what needs user input or reconciliation. |
 
-A model's low confidence can justify more observation. It is not calibrated proof that replay or escalation is safe. Automatic recovery needs an observed capability failure and satisfied preconditions.
+Unknown effects take precedence over reconstruction/restart. A crash during Save, navigation, typing with autosave, or a file upload may leave a server-side effect even when the UI vanished. Reconcile through available application UI before repeating it; an empty form or missing toast is not proof nothing happened. If evidence is inconclusive, stop. Never use a new engine as an implicit retry.
 
-## Verification is separate from execution
+A fresh document invalidates handles, coordinates, and live checkpoints. Bind replacement tabs explicitly to the configured profile; never discover another browser. Stop old adapter control before recovery, including same-profile/two-home contention.
 
-Execution completion, requirement verification, and mutation certainty are separate fields. Finishing a flow is not evidence that it worked. An assertion mismatch is an observation, not automatically proof of a product defect.
+### Half-filled forms
 
-Freeze requirement IDs and expected results before the actions they evaluate. Checks refer to checkpoints and explicit frame/locator scopes. Evidence records the expected/actual pair, capture time, URL, target, observation ID, and method. Record deployment identity as verified, user-supplied, or unknown, with its source. An undeployed change is untested; an unknown build does not become verified because a familiar heading appeared.
+Before an action, retain only policy-permitted input intent or a secure reference to it; distinguish intended values from values actually observed in the page. If recovery is enabled, explicitly allowlist the non-secret fields needed to reconstruct the task. Prefer user-supplied inputs and application drafts over copying the page. Verify draft persistence through the UI rather than assuming autosave worked.
 
-Keep existing checks backward compatible, including exact value matching, text inclusion, visibility requirements, and DOM-count behavior. Introduce frame-aware and open-shadow-root checks explicitly. Do not silently replace CSS semantics with Playwright's broader shadow-piercing or text normalization. No matching support means blocked or untested, not an absent-element success.
+Capture allowed recovery data before failure, with its source and last observation. A crash cannot supply a final snapshot, and edits after the last capture may be lost. Keep recovery payloads outside transcripts and git, with restricted local access, expiry, and deletion. No blanket DOM, storage, form, or screenshot dumps. Do not retain passwords, one-time codes, authentication material, or file contents as recovery payloads; use existing credential mechanisms or request local re-entry/reselection. Inputs forbidden from storage remain unavailable after a crash.
 
-Visual assertions are explicit expectations evaluated from images. Label their evidence as model-evaluated. Schema-valid extraction also proves only shape, not truth. A whole test is verified only to the extent of its supplied checks and inspected requirements. Aggregate reports expose untested and blocked coverage rather than reducing everything to a green badge.
+Example: reopen a wizard and re-enter retained field values through normal UI controls, re-resolving targets and verifying each rebuilt step. Do this only if repeated input/navigation is known safe; ordinary fields may autosave or trigger other effects. Do not recreate hidden JavaScript state or inject values into application stores. Files, opaque editor state, expired tokens, and unrecorded edits may require fresh user input or a restart. There is no generic lossless browser restore.
 
-Recovery appends an attempt. Re-verifying a later state does not overwrite the original verdict or prove that the original action worked. A change to the goal, expected result, account, or authorization creates a new specification revision or a linked new run.
+Report the recovery choice, evidence, lost/available inputs without their values, unresolved effects, and next action. Share budgets across attempts and bound retries; stop repeated crashes.
 
-## Resource and data boundaries
+### Keep test failures visible
 
-One run shares action, model-call, active-time, and supported cost budgets across engines and resume calls. Per-invocation wall deadlines still apply. Human review time is separate from active execution time. Resume does not reset consumed budgets. Reserve time for final observation and orderly cancellation before spending the execution allowance.
+Preserve interrupted/failed attempts and unknown crash causes. A later pass is a recovered/retried pass, not uninterrupted success. When draft persistence or crash recovery is under test, refilling the form bypasses the requirement: retain the failure and test reconstruction separately.
 
-Interruptible, scoped subprocesses own adapters that cannot cancel individual operations reliably. Cancellation must stop new dispatch and settle the worker before releasing its lease. A timed-out promise alone is not cancellation. No timeout can roll back a submitted production operation.
+## Agent control and execution
 
-Cost fields distinguish measured, estimated, and unknown usage. Never treat unknown as zero. Promise a hard monetary cap only where provider request bounds and metering make it enforceable; otherwise reject that requirement or offer explicit call/token limits.
+Return requested data with evidence, progress, uncertainty, budget, and typed next actions. Summary inspection needs no model calls. Separate focused live inspection from bounded recorded history; label stale, missing, truncated, and model-interpreted data. Extraction schema validity is not factual verification.
 
-Local configuration owns profile and provider selection. Requests can narrow permissions, not choose a different profile or widen provider egress. A natural-language read-only goal is not a technical read-only guarantee. Browser navigation itself may have side effects. State exactly which controls are enforced and which rely on instructions. Fallback scripts remain trusted local code, not a sandbox.
+Extend existing operations with run inspection/recovery, screenshots, and checking saved expectations. Keep exact schemas in code and preserve existing scenarios/exit codes. Separate execution, verification, recovery, and cleanup outcomes. Readiness distinguishes installed/configured from actually tested without routine provider calls.
 
-Keep screenshots, traces, and account data local by default, with bounded retention and explicit export. Mask known secrets before collection where supported, minimize captures, and report redaction coverage honestly. Prefer selectors and short evidence values to full page dumps. Never promise complete screenshot redaction. Page content is untrusted input and cannot change tools, expectations, permissions, or learning policy.
+Use reviewed UI recipes when applicable, scoped deterministic operations for known interactions, Jev for suitable autonomous work, and Midscene for visual tasks. Preserve explicit `auto`/`jev`/`vision` selection. Lazy-load fallback; successful Jev paths need no screenshots or vision calls unless requested.
 
-## Upstream integration constraints
+Prove exact-target CDP handoff without state changes. Normal fallback must not require arbitrary scripts; vision requires explicit provider/data-sharing configuration. Disable popup/navigation and native-select rewriting during tests. Open-root/frame checks must preserve legacy matching semantics; unsupported scope is unknown. Closed-root visual control does not imply DOM assertions. Freeze expectations and label visual judgments; failed checks never trigger attempts to make them pass.
 
-[Playwright CDP attachment](https://playwright.dev/docs/api/class-browsertype#browser-type-connect-over-cdp) is lower fidelity than its native protocol. Validate exact-target attachment and state preservation with the selected version. Evaluate `noDefaults` where supported rather than silently applying context overrides. [Playwright locators](https://playwright.dev/docs/locators#locate-in-shadow-dom) support open shadow roots, not closed-root DOM targeting.
+MCP returns actual image content, CLI a local path, both with capture time, target/document, dimensions, crop, and CSS scaling. Do not assume remote clients can read server-local paths. Midscene must work without outer-agent vision.
 
-[Midscene's Playwright integration](https://midscenejs.com/integrate-with-playwright) accepts existing pages. Disable defaults that rewrite popup navigation or native select rendering for E2E testing. Screenshot-based control of a rendered closed-root widget does not imply DOM assertion support inside it.
+Settle cancelled workers before releasing control. Budgets span engines/attempts; unknown cost is not zero. Read-only goals are guidance, not enforced isolation. Website content cannot change authorization. Keep evidence local/minimal; do not promise complete redaction.
 
-These documents are design inputs, not proof that our adapters work. Pin implementation versions and pass [the delivery gates](implementation-plan.md) before advertising a capability.
+## Implement and prove
+
+| Increment | Required tests |
+| --- | --- |
+| Run and recovery records | Kill the caller, disconnect CDP, crash the renderer, reload the same tab, and restart Chrome. Test known, unsaved, stale, forbidden-to-store, and missing inputs; expired auth; safe reconstruction and explicit inability to recover. |
+| Safe action boundaries | Crash before dispatch, after dispatch but before receipt, and after a server effect. Include autosave and a submitted Save with a lost response. No duplicate uncertain writes, wrong-profile actions, or concurrent resume; budgets never reset. |
+| Observation and fallback | Scoped frame/shadow assertions, partial extraction, actual MCP images, stale coordinates, and same-tab visual handoff. Recreated forms must have fresh evidence. Preserve crashes and original verdicts, including a deliberately broken persistence test. |
+| Agent usability and reuse | A fresh agent needs only the run ID to diagnose the interruption. Compare total verified success, false passes, time, calls, and bytes. Test real clients; distinguish controlled model decisions from opt-in live-model trials. |
+
+Recovery remains explicit until tests establish safe automatic cases. Missing upstream hooks cannot produce reliable action receipts. CI uses controlled pages; production validation remains authorized and UI-only.
+
+Later, reuse reviewed procedures only when fresh account/origin, permission, and UI preconditions hold; quarantine drift. Never reuse old answers or permissions. Existing scripts and a small manifest suffice; measure savings before adding learning machinery.
+
+Keep the three skills; update them only as behavior ships. This file owns design/checklist, while code, tests, and operational guides own usage. No parallel process documents.

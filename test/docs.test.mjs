@@ -39,7 +39,7 @@ test("skill names, descriptions, and local reference pointers are valid", async 
 });
 
 test("local documentation links resolve", async () => {
-  const docs = ["README.md", "AGENTS.md", "VISION.md", ...(await readdir(path.join(root, "docs"))).filter(name => name.endsWith(".md")).map(name => `docs/${name}`)];
+  const docs = ["README.md", "AGENTS.md", ...(await readdir(path.join(root, "docs"))).filter(name => name.endsWith(".md")).map(name => `docs/${name}`)];
   for (const file of docs) {
     const source = await read(file);
     for (const match of source.matchAll(/\[[^\]]*\]\(([^)\s]+)\)/g)) {
