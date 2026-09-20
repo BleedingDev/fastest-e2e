@@ -14,6 +14,8 @@ A scenario requires `name`, `url`, `goal`, and a nonempty `checks` array. Each c
 
 `value`, `checked`, and scoped `text` require exactly one visible matching element. These are DOM checks, not pixel or layout assertions. `[aria-checked]` alone is not a native `checked` property.
 
+Current selectors query only the top-level document; they do not enter shadow roots or iframe documents. A zero count does not establish absence inside those unsupported scopes. Scoped and visual verification are proposed in the [implementation plan](implementation-plan.md); its examples and commands are not the current scenario format.
+
 ## Choose evidence before acting
 
 ```text

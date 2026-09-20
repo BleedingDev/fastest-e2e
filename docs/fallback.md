@@ -1,5 +1,7 @@
 # Browser Harness fallback
 
+This page documents the current scripted fallback. Autonomous vision continuation and native MCP image delivery are proposed in the [implementation plan](implementation-plan.md), not available in the current runtime.
+
 Use `fastest-e2e harness --target <id> --file script.py` to continue an owned task tab. It uses the same dedicated browser and session lock as Jev. The target comes from the earlier result's `targetId`; inspect partial changes before retrying a mutation.
 
 Save a trusted script, for example `inspect-settings.py`:
