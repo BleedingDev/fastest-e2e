@@ -23,16 +23,25 @@ jobs:
         run: |
           npm ci --ignore-scripts
           uv sync --project worker --locked
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=high
       - name: Typecheck and unit/protocol tests
+        if: always() && !cancelled()
         run: npm run check
       - name: Legacy upstream browser and CLI lifecycle
-        if: ${{ !cancelled() }}
+        if: always() && !cancelled()
         run: |
           uv run --project worker --no-sync python worker/tests/browser_smoke.py
           node test/lifecycle.smoke.mjs
       - name: Managed upstream Jev and crash receipts
-        if: ${{ !cancelled() }}
+        if: always() && !cancelled()
         run: uv run --project worker --no-sync python worker/tests/managed_smoke.py
-      - name: Scoped browser, crash recovery, MCP images, and controlled vision
-        if: ${{ !cancelled() }}
-        run: npm run test:browser
+      - name: Scoped adapter and native MCP images
+        if: always() && !cancelled()
+        run: timeout 90s node test/adapter.smoke.mjs
+      - name: Public workflows and real crash recovery
+        if: always() && !cancelled()
+        run: timeout 180s node test/workflows.smoke.mjs
+      - name: Actual Midscene with controlled provider
+        if: always() && !cancelled()
+        run: timeout 90s node test/vision.smoke.mjs
