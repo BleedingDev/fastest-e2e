@@ -116,6 +116,10 @@ Jev's MVP lacks support for some frames, shadow roots, canvas, uploads, popup ta
 
 The name is not a benchmark claim. CI exercises real Chrome with scripted model decisions. Live-model reliability, production authentication, and performance on your applications remain to be measured. Patchright and visual-agent frameworks are not included.
 
+## Planned work
+
+The [design and implementation checklist](docs/design.md) covers agent ergonomics, scoped/visual fallback, and recovery when live browser state is lost. These are proposals, not current capabilities. A saved run must never imply that a crashed page or half-filled form can be restored.
+
 ## Develop
 
 ```sh
