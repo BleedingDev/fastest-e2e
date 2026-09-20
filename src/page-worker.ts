@@ -269,6 +269,8 @@ export async function pageJob(job: PageJob, signal: AbortSignal): Promise<Data> 
   try {
     parentGuard(); signal.throwIfAborted();
     raw = await Cdp.open(job.session); sid = await raw.attach(job.targetId);
+    // Keep background UI actions live without bringing the user's window forward.
+    if (job.operation === "steps" || job.operation === "vision") await raw.send("Emulation.setFocusEmulationEnabled", { enabled: true }, sid);
     if (job.operation === "continuity") return { fingerprint: await frameState() };
     if (job.operation === "inspect") {
       const { locator } = await scoped(page, job.scope ?? {});

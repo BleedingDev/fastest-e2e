@@ -99,7 +99,13 @@ try {
   pending.append('target', { targetId: observed.targetId, browserId: f.session.browserId });
   pending.append('attempt.start', { mode: 'new', engine: 'playwright', allocatedMs: 120_000 });
   pending.append('action.start', { id: 'save-lost-receipt', kind: 'click', step: 0, safeToRepeat: false });
-  await attached.page.locator('#save').click(); await attached.page.locator('#status').getByText('Saved: Saved once', { exact: true }).waitFor();
+  const dispatch = await Cdp.open(f.session);
+  try {
+    const focused = await dispatch.attach(observed.targetId);
+    await dispatch.send('Emulation.setFocusEmulationEnabled', { enabled: true }, focused);
+    await attached.page.locator('#save').click();
+    await attached.page.locator('#status').getByText('Saved: Saved once', { exact: true }).waitFor();
+  } finally { await dispatch.close(); }
   pending.append('attempt.end', { status: 'blocked', reasonCode: 'interrupted', durationMs: 10 });
   const countBefore = f.writes;
   await assert.rejects(run(resumeRun({ runId: pending.runId, expectedRevision: pending.state().revision })), /no replay occurred/);
