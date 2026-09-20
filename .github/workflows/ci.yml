@@ -7,7 +7,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -23,11 +23,25 @@ jobs:
         run: |
           npm ci --ignore-scripts
           uv sync --project worker --locked
-      - name: Typecheck and test CLI, MCP, and worker
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=high
+      - name: Typecheck and unit/protocol tests
+        if: always() && !cancelled()
         run: npm run check
-      - name: Real Chrome smoke test, without model API calls
-        if: ${{ !cancelled() }}
-        run: uv run --project worker --no-sync python worker/tests/browser_smoke.py
-      - name: Public CLI lifecycle, without model API calls
-        if: ${{ !cancelled() }}
-        run: node test/lifecycle.smoke.mjs
+      - name: Legacy upstream browser and CLI lifecycle
+        if: always() && !cancelled()
+        run: |
+          uv run --project worker --no-sync python worker/tests/browser_smoke.py
+          node test/lifecycle.smoke.mjs
+      - name: Managed upstream Jev and crash receipts
+        if: always() && !cancelled()
+        run: uv run --project worker --no-sync python worker/tests/managed_smoke.py
+      - name: Scoped adapter and native MCP images
+        if: always() && !cancelled()
+        run: timeout 90s node test/adapter.smoke.mjs
+      - name: Public workflows and real crash recovery
+        if: always() && !cancelled()
+        run: timeout 180s node test/workflows.smoke.mjs
+      - name: Actual Midscene with controlled provider
+        if: always() && !cancelled()
+        run: timeout 90s node test/vision.smoke.mjs

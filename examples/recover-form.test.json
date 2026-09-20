@@ -1,0 +1,67 @@
+{
+  "name": "Fill independent non-autosaving fields",
+  "url": "https://your-app.example/form",
+  "goal": "Enter permitted form values without submitting; only use repeat-safe declarations for this known non-autosaving form",
+  "maxSteps": 40,
+  "keepTab": true,
+  "steps": [
+    {
+      "kind": "fill",
+      "selector": "#name",
+      "value": "E2E draft",
+      "safeToRepeat": true
+    },
+    {
+      "kind": "fill",
+      "selector": "#note",
+      "valueFromEnv": "E2E_FORM_NOTE",
+      "safeToRepeat": true
+    }
+  ],
+  "checks": [
+    {
+      "kind": "value",
+      "selector": "#name",
+      "value": "E2E draft"
+    },
+    {
+      "kind": "value",
+      "selector": "#note",
+      "value": "Expected note"
+    }
+  ],
+  "recovery": {
+    "restartSafe": true,
+    "maxAttempts": 3,
+    "fields": [
+      {
+        "key": "name",
+        "selector": "#name"
+      }
+    ],
+    "reconstruct": [
+      {
+        "kind": "navigate",
+        "value": "https://your-app.example/form",
+        "safeToRepeat": true
+      },
+      {
+        "kind": "fill",
+        "selector": "#name",
+        "valueFromRecovery": "name",
+        "safeToRepeat": true
+      },
+      {
+        "kind": "checkpoint",
+        "safeToRepeat": true,
+        "checks": [
+          {
+            "kind": "value",
+            "selector": "#name",
+            "value": "E2E draft"
+          }
+        ]
+      }
+    ]
+  }
+}

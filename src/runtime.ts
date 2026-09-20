@@ -3,6 +3,8 @@ import path from "node:path";
 import { Context, Effect, Layer, Schema } from "effect";
 import { Acknowledgement, BrowserError, Inspection, RunInput, RunResult, TestInput, validateRun, validateTest } from "./contracts.js";
 import * as host from "./host.js";
+import { runTask } from "./workflows.js";
+import { Task, TestTask, type Report } from "./task.js";
 import { subprocess } from "./process.js";
 
 export const io = <A>(operation: () => Promise<A>) => Effect.tryPromise({
@@ -40,35 +42,24 @@ export const Doctor = Schema.Struct({
   jevKeyPresent: Schema.Boolean,
   textKeyPresent: Schema.Boolean,
   reason: Schema.String,
+  capabilities: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 });
 export const ScriptInput = Schema.Struct({ targetId: Schema.String, code: Schema.String });
 export const ScriptResult = Schema.Struct({ browserId: Schema.String, targetId: Schema.String, output: Schema.String });
 
 export class BrowserRuntime extends Context.Service<BrowserRuntime, {
-  readonly run: (input: RunInput) => Effect.Effect<RunResult, BrowserError>;
-  readonly test: (input: TestInput) => Effect.Effect<RunResult, BrowserError>;
+  readonly run: (input: typeof Task.Type) => Effect.Effect<Report, BrowserError>;
+  readonly test: (input: typeof TestTask.Type) => Effect.Effect<Report, BrowserError>;
   readonly inspect: (targetId: string) => Effect.Effect<typeof Inspection.Type, BrowserError>;
   readonly close: (targetId: string) => Effect.Effect<typeof Acknowledgement.Type, BrowserError>;
   readonly harness: (input: typeof ScriptInput.Type) => Effect.Effect<typeof ScriptResult.Type, BrowserError>;
   readonly doctor: Effect.Effect<typeof Doctor.Type, BrowserError>;
 }>()("fastest-e2e/BrowserRuntime", {
   make: Effect.sync(() => {
-    const execute = (input: RunInput | TestInput, testing: boolean) => Effect.gen(function* () {
-      const started = performance.now();
-      yield* Effect.try({ try: () => testing ? validateTest(input as TestInput) : validateRun(input), catch: inputError });
-      if (!process.env.TYPESAFE_API_KEY) return yield* Effect.fail(new BrowserError({ code: "credentials", reason: "Set TYPESAFE_API_KEY in the invoking process environment." }));
-      return yield* withSession(session => worker(session, { op: testing ? "test" : "run", ...input }, input.timeoutMs ?? 120_000).pipe(
-        Effect.flatMap(Schema.decodeUnknownEffect(RunResult)),
-        Effect.map(result => ({ ...result, durationMs: Math.round(performance.now() - started),
-          ...(testing ? { name: (input as TestInput).name, ...((input as TestInput).changeRef ? { changeRef: (input as TestInput).changeRef } : {}) } : {}),
-        })),
-        Effect.mapError(error => error instanceof BrowserError ? error : protocolError()),
-      ));
-    });
-    const run = (input: RunInput) => Schema.decodeUnknownEffect(RunInput)(input).pipe(
-      Effect.mapError(inputError), Effect.flatMap(value => execute(value, false)));
-    const test = (input: TestInput) => Schema.decodeUnknownEffect(TestInput)(input).pipe(
-      Effect.mapError(inputError), Effect.flatMap(value => execute(value, true)));
+    const run = (input: typeof Task.Type) => Schema.decodeUnknownEffect(Task)(input, { onExcessProperty: "error" }).pipe(
+      Effect.mapError(inputError), Effect.flatMap(value => runTask(value, false)));
+    const test = (input: typeof TestTask.Type) => Schema.decodeUnknownEffect(TestTask)(input, { onExcessProperty: "error" }).pipe(
+      Effect.mapError(inputError), Effect.flatMap(value => runTask(value, true)));
     const inspect = (targetId: string) => withSession(session => worker(session, { op: "inspect", targetId }, 15_000).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(Inspection)), Effect.mapError(error => error instanceof BrowserError ? error : protocolError())));
     const close = (targetId: string) => withSession(session => worker(session, { op: "close", targetId }, 15_000).pipe(
@@ -82,7 +73,11 @@ export class BrowserRuntime extends Context.Service<BrowserRuntime, {
       let reason = "";
       try { session = await host.connect(); } catch (error) { reason = error instanceof Error ? error.message : "No configured connection."; }
       return { configured, workerInstalled, connected: session !== undefined, browserId: session?.browserId ?? "",
-        jevKeyPresent: Boolean(process.env.TYPESAFE_API_KEY), textKeyPresent: Boolean(process.env.TEXT_MODEL_API_KEY), reason };
+        jevKeyPresent: Boolean(process.env.TYPESAFE_API_KEY), textKeyPresent: Boolean(process.env.TEXT_MODEL_API_KEY), reason,
+        capabilities: { deterministic: true, scopedAssertions: true, screenshots: true, durableRuns: true,
+          vision: { installed: true, enabled: (await host.configuration().catch(() => null))?.visionEnabled === true,
+            configured: ["MIDSCENE_MODEL_API_KEY", "MIDSCENE_MODEL_BASE_URL", "MIDSCENE_MODEL_NAME", "MIDSCENE_MODEL_FAMILY"].every(k => !!process.env[k]), providerTested: false },
+          jev: { installed: workerInstalled, keyPresent: Boolean(process.env.TYPESAFE_API_KEY), providerTested: false } } };
     });
     return { run, test, inspect, close, harness, doctor };
   }),
@@ -98,6 +93,7 @@ export const stop = withSession(session => worker(session, { op: "stop" }, 30_00
 export const install = locked(() => {
   const env: NodeJS.ProcessEnv = { ...process.env, UV_PROJECT_ENVIRONMENT: path.join(host.home(), "worker-venv") };
   delete env.TYPESAFE_API_KEY; delete env.TEXT_MODEL_API_KEY;
+  for (const key of Object.keys(env)) if (key.startsWith("MIDSCENE_")) delete env[key];
   return subprocess("uv", ["sync", "--project", path.join(host.packageRoot, "worker"), "--python", "3.12", "--no-dev", "--locked"],
     env, "", 180_000).pipe(Effect.as({ ok: true }));
 });

@@ -1,13 +1,11 @@
 # fastest-e2e
 
-Read `package.json` for commands and `README.md` for supported behavior. Run `npm run check` before committing. Browser integration tests are documented in the README.
+Read `package.json` for commands, `README.md` for usage, and `docs/design.md` for runtime/recovery invariants. Run `npm run check`; browser suites are in CI and README. No parallel design/process documents.
 
-For planned runtime changes, read [the design and checklist](docs/design.md). Keep proposals out of operational skills until implemented. A saved run is not saved browser state; distinguish validated continuation from reconstruction, restart, and unrecoverable loss. Keep design decisions in that one document, not parallel process documents.
+CLI and MCP use the same Effect v4 handlers and schemas. Reuse upstream Jev, Playwright, and Midscene. Do not build another agent loop. Pin dependencies with both lockfiles and Actions with full commit SHAs.
 
-CLI and MCP call the same Effect v4 service. Keep the Jev action loop upstream; `worker/bridge.py` owns only session handoff, assertions, and the process protocol. Pin upgrades as one reviewed change with both lock files updated.
+A saved run is not saved browser state. Preserve profile/target/document ownership, dispatch uncertainty, cumulative budgets, and failed attempts. Never retry uncertain production writes or use reconstruction to hide a failed persistence test. Missing evidence cannot become a pass.
 
-Browser selection must fail closed. Never add automatic personal-profile discovery, implicit cloud fallback, or retries of uncertain production mutations. Keep stdout valid JSON or MCP; redact credentials and avoid raw model error dumps.
+Keep stdout JSON/MCP, errors redacted, provider use explicit, and recovery inputs allowlisted. Literal task inputs are persisted; sensitive values need local environment references. Do not claim lossless restore, complete redaction, or an OS sandbox.
 
-A test pass requires fresh explicit evidence. A model's completion claim is not evidence. Preserve blocked/failed tabs and failed attempts for diagnosis.
-
-Keep the three skills short. Put setup details in `docs/setup.md`, fallback details in `docs/fallback.md`, and command options in `--help`. Change shared behavior in one place.
+Keep the three skills short. Put setup in `docs/setup.md`, tests in `docs/testing.md`, and fallback in `docs/fallback.md`. Change shared behavior in one place and test CLI/MCP parity.

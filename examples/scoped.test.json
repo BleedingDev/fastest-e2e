@@ -1,0 +1,28 @@
+{
+  "name": "Embedded settings are readable",
+  "url": "https://your-app.example/settings",
+  "goal": "Verify the heading and embedded settings control without changing values",
+  "steps": [
+    {
+      "kind": "checkpoint",
+      "checks": [
+        {
+          "kind": "text",
+          "selector": "h1",
+          "value": "Settings"
+        }
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "kind": "value",
+      "frames": [
+        "iframe#settings"
+      ],
+      "shadow": "open",
+      "selector": "input[name=displayName]",
+      "value": "Expected name"
+    }
+  ]
+}

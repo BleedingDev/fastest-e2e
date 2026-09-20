@@ -1,74 +1,49 @@
-# Agent workflow design
+# Runtime notes
 
-Proposed, not shipped. [README](../README.md) documents the current CLI. This document replaces the separate vision, agent-contract, learning, and implementation-plan documents.
-
-## One record of the work, not a browser snapshot
-
-A run records intent, progress, evidence, uncertainty, and next actions across engine switches and agent context loss. **Persisting a run does not persist the application's live state.**
+The implementation lives in [shared contracts](../src/task.ts), [orchestration](../src/workflows.ts), [run storage](../src/journal.ts), [Playwright/Midscene adapter](../src/page-worker.ts), and [managed upstream Jev](../worker/jev_runner.py). CLI/MCP use the same Effect runtime. No separate planning framework is required.
 
 ```text
-Task + expectations
-  Run: attempts, evidence, recovery status, remaining budget
-    Executor: Jev / scoped Playwright / Midscene
-      Owned Chrome profile, tab, and live document
+Task: goal, scope, checks, allowed inputs
+  Run: attempts, receipts, checkpoints, uncertainty, remaining budget
+    Executor: upstream Jev / deterministic Playwright / upstream Midscene
+      Configured Chrome generation and owned targets
 ```
 
-CLI and MCP share Effect services and upstream engines. A local journal records permitted intent and dispatch/completion receipts. Flush before dispatch; incomplete receipts mean uncertainty, not permission to retry. Deduplication and profile-scoped leases prevent competing dispatch, not exactly-once website effects.
+## Recovery
 
-## Recovery after interruption
+A run journal persists work, not browser memory. It flushes intent before dispatch and records completion afterward. A lost receipt remains uncertain. A document/visible-state fingerprint detects reload or changed input; it is not a snapshot of opaque application stores. Resume also checks scoped frame state when that adapter recorded it.
 
-Stop dispatch. Distinguish client disconnection from page/browser crash. Revalidate account, browser, owned target, document generation, and task-specific live state. An unchanged URL or tab ID is insufficient: the same tab can reload and lose its form. Unproven continuity is unknown.
+`inspect --run ID` reads the record without browser/model calls. `--view page` reads current state; `--view history --cursor N --limit 20` reads bounded recorded events. A replacement coding agent can use the run ID without replaying conversation history.
 
-| Recovery | Required evidence and behavior |
+| Mode | Requirements |
 | --- | --- |
-| **Resume** | The relevant live state survived and there is no unresolved mutation. Continue remaining work without reload or replay. |
-| **Reconstruct** | State was lost, but a validated UI route and permitted inputs or an application draft are available. Rebuild only the missing state, then verify it. This is a new attempt, not restoration of the old document. |
-| **Restart** | Reconstruction is unavailable, but the workflow can safely start again. Start a linked attempt from the beginning within existing authorization and remaining budget. |
-| **Blocked** | Inputs are unavailable or must not be retained, reconstruction is unsafe, or an earlier effect is uncertain. State exactly what was lost and what needs user input or reconciliation. |
+| Resume | Correct live browser/target/document and matching state; no unresolved dispatch. Latest revision required. Partial autonomous work also needs an explicit remaining goal. |
+| Reconstruct | Declared repeat-safe UI route, retained allowlisted fields or local environment inputs, and no unresolved side effect. Creates a new owned tab/attempt and verifies rebuilt state. |
+| Restart | Explicit `restartSafe`, no unsafe actions in the history, and remaining budget. Creates a linked attempt from the beginning. |
+| Blocked | Missing/expired/forbidden inputs, ambiguous effect, unsafe replay, incompatible browser, or exhausted budget. |
 
-Unknown effects take precedence over reconstruction/restart. A crash during Save, navigation, typing with autosave, or a file upload may leave a server-side effect even when the UI vanished. Reconcile through available application UI before repeating it; an empty form or missing toast is not proof nothing happened. If evidence is inconclusive, stop. Never use a new engine as an implicit retry.
+[recover-form.test.json](../examples/recover-form.test.json) shows a half-filled form. Only use `safeToRepeat` where the application's behavior justifies it. Typing and navigation may autosave or submit changes. Recovery freezes retained inputs before navigation, so an empty replacement form cannot erase them. Secrets, files, one-time codes, and opaque editor state are not recoverable payloads; re-entry may be necessary.
 
-A fresh document invalidates handles, coordinates, and live checkpoints. Bind replacement tabs explicitly to the configured profile; never discover another browser. Stop old adapter control before recovery, including same-profile/two-home contention.
+Declare `recovery.reconcile` and `reconcileOutcome` before a possibly uncertain effect. `reconcile --run ID` evaluates that UI evidence. For a completed deterministic dispatch, matching evidence advances its cursor once instead of resubmitting. For a completed autonomous dispatch without a cursor, continuation stays blocked rather than guessing.
 
-### Half-filled forms
+After a browser crash, a new observation task can inspect application state in the same profile; `reconcile --run ORIGINAL --from-run OBSERVER` uses its live page with the original expectations. This does not retarget or restore the original run. Evidence of absence must be strong enough for the application; a missing toast is not proof that Save did nothing.
 
-Before an action, retain only policy-permitted input intent or a secure reference to it; distinguish intended values from values actually observed in the page. If recovery is enabled, explicitly allowlist the non-secret fields needed to reconstruct the task. Prefer user-supplied inputs and application drafts over copying the page. Verify draft persistence through the UI rather than assuming autosave worked.
+Recovery preserves original attempts/verdicts. `verify` never replays actions. A failed test is not resumable as an automatic repair. If persistence itself is under test, reconstruction must not substitute for it.
 
-Capture allowed recovery data before failure, with its source and last observation. A crash cannot supply a final snapshot, and edits after the last capture may be lost. Keep recovery payloads outside transcripts and git, with restricted local access, expiry, and deletion. No blanket DOM, storage, form, or screenshot dumps. Do not retain passwords, one-time codes, authentication material, or file contents as recovery payloads; use existing credential mechanisms or request local re-entry/reselection. Inputs forbidden from storage remain unavailable after a crash.
+## Bounds and ownership
 
-Example: reopen a wizard and re-enter retained field values through normal UI controls, re-resolving targets and verifying each rebuilt step. Do this only if repeated input/navigation is known safe; ordinary fields may autosave or trigger other effects. Do not recreate hidden JavaScript state or inject values into application stores. Files, opaque editor state, expired tokens, and unrecorded edits may require fresh user input or a restart. There is no generic lossless browser restore.
+Per-profile and per-home leases serialize control. Worker PIDs are registered before dispatch. Stale leases are reclaimed only after owners/workers are dead. Workers check parent liveness; cancellation settles them before another caller can acquire the lease. It cannot undo an already sent action.
 
-Report the recovery choice, evidence, lost/available inputs without their values, unresolved effects, and next action. Share budgets across attempts and bound retries; stop repeated crashes.
+A request ID deduplicates identical task specifications in the home/profile; changed input conflicts. It does not provide exactly-once website side effects. A paused record can outlive Chrome, but a browser-generation change invalidates live continuation.
 
-### Keep test failures visible
+Action/model-call/active-time allowances span attempts. CPU/model pricing is not fabricated: monetary cost remains unknown. Summary/readiness calls use no models. Playwright/Midscene load only when needed. Successful Jev-only paths do not make vision calls unless a visual query is explicitly requested.
 
-Preserve interrupted/failed attempts and unknown crash causes. A later pass is a recovered/retried pass, not uninterrupted success. When draft persistence or crash recovery is under test, refilling the form bypasses the requirement: retain the failure and test reconstruction separately.
+## Storage and reusable procedures
 
-## Agent control and execution
+Private run files contain literal task intent and selected evidence. Default expiry is 24 hours (configurable 1–168); access after expiry is rejected and `prune` deletes expired records/artifacts. No background deletion service runs. Use local environment references for sensitive input, never literal goals/inputs. Allowlisted recovery fields are a separate, explicitly selected payload. Screenshots/page text may expose account data; no complete redaction or OS sandbox is claimed.
 
-Return requested data with evidence, progress, uncertainty, budget, and typed next actions. Summary inspection needs no model calls. Separate focused live inspection from bounded recorded history; label stale, missing, truncated, and model-interpreted data. Extraction schema validity is not factual verification.
+Recipe reuse is opt-in. `recipe propose --run ID --name NAME` requires a verified, uninterrupted deterministic run with preconditions. `recipe approve --name NAME --trial OTHER_RUN_ID` requires explicit review and a distinct matching verified trial. Fill values become current task parameters; repeat permissions and old answers are not inherited. Recipes are bound to origin/path, expire after seven days, and are quarantined on failed preconditions, ambiguous targets, or assertion mismatch. Two trials do not establish universal reliability. No auto-export or global skill rewriting occurs.
 
-Extend existing operations with run inspection/recovery, screenshots, and checking saved expectations. Keep exact schemas in code and preserve existing scenarios/exit codes. Separate execution, verification, recovery, and cleanup outcomes. Readiness distinguishes installed/configured from actually tested without routine provider calls.
+## Validation boundary
 
-Use reviewed UI recipes when applicable, scoped deterministic operations for known interactions, Jev for suitable autonomous work, and Midscene for visual tasks. Preserve explicit `auto`/`jev`/`vision` selection. Lazy-load fallback; successful Jev paths need no screenshots or vision calls unless requested.
-
-Prove exact-target CDP handoff without state changes. Normal fallback must not require arbitrary scripts; vision requires explicit provider/data-sharing configuration. Disable popup/navigation and native-select rewriting during tests. Open-root/frame checks must preserve legacy matching semantics; unsupported scope is unknown. Closed-root visual control does not imply DOM assertions. Freeze expectations and label visual judgments; failed checks never trigger attempts to make them pass.
-
-MCP returns actual image content, CLI a local path, both with capture time, target/document, dimensions, crop, and CSS scaling. Do not assume remote clients can read server-local paths. Midscene must work without outer-agent vision.
-
-Settle cancelled workers before releasing control. Budgets span engines/attempts; unknown cost is not zero. Read-only goals are guidance, not enforced isolation. Website content cannot change authorization. Keep evidence local/minimal; do not promise complete redaction.
-
-## Implement and prove
-
-| Increment | Required tests |
-| --- | --- |
-| Run and recovery records | Kill the caller, disconnect CDP, crash the renderer, reload the same tab, and restart Chrome. Test known, unsaved, stale, forbidden-to-store, and missing inputs; expired auth; safe reconstruction and explicit inability to recover. |
-| Safe action boundaries | Crash before dispatch, after dispatch but before receipt, and after a server effect. Include autosave and a submitted Save with a lost response. No duplicate uncertain writes, wrong-profile actions, or concurrent resume; budgets never reset. |
-| Observation and fallback | Scoped frame/shadow assertions, partial extraction, actual MCP images, stale coordinates, and same-tab visual handoff. Recreated forms must have fresh evidence. Preserve crashes and original verdicts, including a deliberately broken persistence test. |
-| Agent usability and reuse | A fresh agent needs only the run ID to diagnose the interruption. Compare total verified success, false passes, time, calls, and bytes. Test real clients; distinguish controlled model decisions from opt-in live-model trials. |
-
-Recovery remains explicit until tests establish safe automatic cases. Missing upstream hooks cannot produce reliable action receipts. CI uses controlled pages; production validation remains authorized and UI-only.
-
-Later, reuse reviewed procedures only when fresh account/origin, permission, and UI preconditions hold; quarantine drift. Never reuse old answers or permissions. Existing scripts and a small manifest suffice; measure savings before adding learning machinery.
-
-Keep the three skills; update them only as behavior ships. This file owns design/checklist, while code, tests, and operational guides own usage. No parallel process documents.
+CI exercises real browser attachment, scoped checks, extraction, native MCP images, reload/crash reconstruction, lost-receipt handling, managed Jev, and the real Midscene SDK against controlled model responses. Paid models, production accounts, non-Linux desktop setups, and discovery in each coding harness still require environment-specific validation. Keep that distinction in reports.
