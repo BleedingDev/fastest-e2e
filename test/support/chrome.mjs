@@ -36,14 +36,40 @@ export async function fixture() {
   await new Promise(r => other.listen(0,r)); await new Promise(r => server.listen(0,'127.0.0.1',r));
   const url=`http://127.0.0.1:${server.address().port}`;
   let child;
-  async function launch() {
-    child = spawn(chromePath, [`--user-data-dir=${profile}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', '--headless=new', '--no-first-run', '--no-default-browser-check', '--site-per-process', '--window-size=1280,900', ...(process.getuid?.()===0 ? ['--no-sandbox'] : []), 'about:blank'], { stdio: 'ignore', detached: true });
-    for(let i=0;i<100;i++){try{return await connect()}catch{}await new Promise(r=>setTimeout(r,50))}
-    throw new Error('Fixture Chrome failed to start');
+  const alive = () => child && child.exitCode === null && child.signalCode === null;
+  async function kill() {
+    if (!alive()) return;
+    const closed = new Promise(resolve => child.once('close', resolve));
+    try { process.kill(-child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+    let timer;
+    try { await Promise.race([closed, new Promise(resolve => { timer = setTimeout(resolve, 2_000); })]); }
+    finally { clearTimeout(timer); }
   }
-  async function kill() { if(child && child.exitCode===null){ const closed=new Promise(r=>child.once('close',r));process.kill(-child.pid,'SIGKILL');await closed; } }
-  const session=await launch();
-  return { directory, profile, session, url, get writes(){return writes}, launch, kill,
-    async cleanup(){await kill(); await Promise.all([new Promise(r=>server.close(r)),new Promise(r=>other.close(r))]);process.env.FASTEST_E2E_HOME=previous;if(previous===undefined)delete process.env.FASTEST_E2E_HOME;await fs.rm(directory,{recursive:true,force:true,maxRetries:3});}
-  };
+  async function launch() {
+    if (alive()) throw new Error('Stop the fixture browser before launching another process for this profile');
+    await fs.rm(path.join(profile, 'DevToolsActivePort'), { force: true });
+    let diagnostic = '', spawnError;
+    child = spawn(chromePath, [`--user-data-dir=${profile}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', '--headless=new', '--no-first-run', '--no-default-browser-check', '--site-per-process', '--window-size=1280,900', ...(process.getuid?.()===0 ? ['--no-sandbox'] : []), 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
+    child.stderr.on('data', chunk => { diagnostic = (diagnostic + chunk.toString()).slice(-8_192); });
+    child.once('error', error => { spawnError = error; });
+    const deadline = Date.now() + 15_000;
+    let last;
+    while (Date.now() < deadline && alive() && !spawnError) {
+      try { return await connect(); } catch (error) { last = error; }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    await kill();
+    throw new Error(`Fixture Chrome failed readiness: ${spawnError?.message ?? last?.message ?? 'process exited'}\n${diagnostic}`);
+  }
+  async function cleanup() {
+    await kill();
+    for (const s of [server, other]) s.closeAllConnections();
+    await Promise.all([new Promise(r => server.close(r)), new Promise(r => other.close(r))]);
+    if (previous === undefined) delete process.env.FASTEST_E2E_HOME;
+    else process.env.FASTEST_E2E_HOME = previous;
+    await fs.rm(directory, { recursive: true, force: true, maxRetries: 3 });
+  }
+  let session;
+  try { session = await launch(); } catch (error) { await cleanup(); throw error; }
+  return { directory, profile, session, url, get writes(){return writes}, launch, kill, cleanup };
 }
