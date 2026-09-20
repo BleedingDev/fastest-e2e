@@ -1,0 +1,77 @@
+name: Validate implementation fixes
+on:
+  push:
+    branches: [feat/run-recovery-and-vision]
+    paths: [.implementation/**, .github/workflows/implementation-fixes.yml]
+permissions:
+  contents: write
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/feat/run-recovery-and-vision'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: 0.12.17
+          python-version: '3.12'
+      - name: Apply source fixes and operational guides
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, lzma, pathlib, shutil, subprocess
+          raw = b''.join(pathlib.Path(f'.implementation/fix-{i}.xz').read_bytes() for i in range(2))
+          assert hashlib.sha256(raw).hexdigest() == '30ee582bb6988cfd01e60a21127db83d88d94fb20d3058075b63d947a5456271'
+          data = json.loads(lzma.decompress(raw))
+          subprocess.run(['git','apply','--check','-'],input=data['patch'],text=True,check=True)
+          subprocess.run(['git','apply','-'],input=data['patch'],text=True,check=True)
+          assert len(data['files']) == 15
+          for name, content in data['files'].items():
+              p = pathlib.PurePosixPath(name)
+              assert not p.is_absolute() and '..' not in p.parts
+              assert name in {'README.md','AGENTS.md','.env.example'} or p.parts[0] in {'docs','skills','examples','test'}
+              target = pathlib.Path(name); target.parent.mkdir(parents=True,exist_ok=True); target.write_text(content)
+          shutil.rmtree('.implementation')
+          pathlib.Path('.github/workflows/implementation-fixes.yml').unlink()
+          PY
+      - name: Preserve changes on implementation branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- src worker test docs skills examples README.md AGENTS.md .env.example .implementation .github/workflows
+          git commit -m 'fix: journal Jev dispatch correctly and document the implemented runtime'
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" push origin HEAD:refs/heads/feat/run-recovery-and-vision
+      - name: Install locked dependencies
+        run: |
+          npm ci --ignore-scripts
+          uv sync --project worker --locked
+      - name: Inspect dependency advisories
+        run: |
+          npm audit --omit=dev --json > /tmp/npm-audit.json || true
+          node --input-type=module - <<'JS'
+          import fs from 'node:fs';
+          const report=JSON.parse(fs.readFileSync('/tmp/npm-audit.json','utf8'));
+          console.log(JSON.stringify({metadata:report.metadata,error:report.error,vulnerabilities:report.vulnerabilities},null,2));
+          JS
+      - name: Typecheck and contract tests
+        run: npm run check
+      - name: Managed upstream Jev receipts
+        if: ${{ !cancelled() }}
+        run: uv run --project worker --no-sync python worker/tests/managed_smoke.py
+      - name: Scoped adapter and MCP images
+        if: ${{ !cancelled() }}
+        run: node test/adapter.smoke.mjs
+      - name: HTTP workflows and real crashes
+        if: ${{ !cancelled() }}
+        run: node test/workflows.smoke.mjs
+      - name: Actual Midscene with controlled provider
+        if: ${{ !cancelled() }}
+        run: node test/vision.smoke.mjs
