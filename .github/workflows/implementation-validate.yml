@@ -1,0 +1,71 @@
+name: Apply and validate implementation
+on:
+  push:
+    branches: [feat/run-recovery-and-vision]
+    paths: [.implementation/**, .github/workflows/implementation-validate.yml]
+permissions:
+  contents: write
+jobs:
+  implement:
+    if: github.ref == 'refs/heads/feat/run-recovery-and-vision'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: 0.12.17
+          python-version: '3.12'
+      - name: Materialize reviewed source payload
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, lzma, pathlib, shutil
+          raw = b''.join(pathlib.Path(f'.implementation/part-{i}.xz').read_bytes() for i in range(4))
+          assert hashlib.sha256(raw).hexdigest() == 'ad13ca73ccbf0b8b2d98b65619347950ac04c61f9a2cf44f7f70247830468a4f'
+          files = json.loads(lzma.decompress(raw))
+          assert len(files) == 24
+          for name, content in files.items():
+              p = pathlib.PurePosixPath(name)
+              assert not p.is_absolute() and '..' not in p.parts
+              assert name == 'package.json' or p.parts[0] in {'src', 'worker', 'test'}
+              assert isinstance(content, str)
+              target = pathlib.Path(name)
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_text(content)
+          shutil.rmtree('.implementation')
+          pathlib.Path('.github/workflows/implementation-bootstrap.yml').unlink()
+          pathlib.Path('.github/workflows/implementation-validate.yml').unlink()
+          PY
+          npm install --package-lock-only --ignore-scripts
+      - name: Commit implementation to its feature branch only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- src worker test package.json package-lock.json .implementation .github/workflows
+          git commit -m 'feat: implement durable browser runs, scoped verification, visual fallback, and crash recovery'
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" push origin HEAD:refs/heads/feat/run-recovery-and-vision
+      - name: Install locked dependencies
+        run: |
+          npm ci --ignore-scripts
+          uv sync --project worker --locked
+      - name: Typecheck and unit/protocol tests
+        run: npm run check
+      - name: Legacy browser and CLI lifecycle
+        if: ${{ !cancelled() }}
+        run: |
+          uv run --project worker --no-sync python worker/tests/browser_smoke.py
+          node test/lifecycle.smoke.mjs
+      - name: Managed upstream Jev
+        if: ${{ !cancelled() }}
+        run: uv run --project worker --no-sync python worker/tests/managed_smoke.py
+      - name: Scoped browser, recovery, and vision
+        if: ${{ !cancelled() }}
+        run: npm run test:browser

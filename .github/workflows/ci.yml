@@ -7,7 +7,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -23,11 +23,16 @@ jobs:
         run: |
           npm ci --ignore-scripts
           uv sync --project worker --locked
-      - name: Typecheck and test CLI, MCP, and worker
+      - name: Typecheck and unit/protocol tests
         run: npm run check
-      - name: Real Chrome smoke test, without model API calls
+      - name: Legacy upstream browser and CLI lifecycle
         if: ${{ !cancelled() }}
-        run: uv run --project worker --no-sync python worker/tests/browser_smoke.py
-      - name: Public CLI lifecycle, without model API calls
+        run: |
+          uv run --project worker --no-sync python worker/tests/browser_smoke.py
+          node test/lifecycle.smoke.mjs
+      - name: Managed upstream Jev and crash receipts
         if: ${{ !cancelled() }}
-        run: node test/lifecycle.smoke.mjs
+        run: uv run --project worker --no-sync python worker/tests/managed_smoke.py
+      - name: Scoped browser, crash recovery, MCP images, and controlled vision
+        if: ${{ !cancelled() }}
+        run: npm run test:browser
