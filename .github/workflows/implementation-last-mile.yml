@@ -1,0 +1,64 @@
+name: Background interaction validation
+on:
+  push:
+    branches: [feat/run-recovery-and-vision]
+    paths: [.github/workflows/implementation-last-mile.yml]
+permissions:
+  contents: write
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/feat/run-recovery-and-vision'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: 0.12.17
+          python-version: '3.12'
+      - name: Keep resumed background actions live
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/page-worker.ts'); s=p.read_text()
+          old='    raw = await Cdp.open(job.session); sid = await raw.attach(job.targetId);'
+          new=old+'\n    // Keep background UI actions live without bringing the user\'s window forward.\n    if (job.operation === "steps" || job.operation === "vision") await raw.send("Emulation.setFocusEmulationEnabled", { enabled: true }, sid);'
+          assert s.count(old)==1; p.write_text(s.replace(old,new))
+          p=Path('test/workflows.smoke.mjs'); s=p.read_text()
+          old="  await attached.page.locator('#save').click(); await attached.page.locator('#status').getByText('Saved: Saved once', { exact: true }).waitFor();"
+          new="  const dispatch = await Cdp.open(f.session);\n  try {\n    const focused = await dispatch.attach(observed.targetId);\n    await dispatch.send('Emulation.setFocusEmulationEnabled', { enabled: true }, focused);\n    await attached.page.locator('#save').click();\n    await attached.page.locator('#status').getByText('Saved: Saved once', { exact: true }).waitFor();\n  } finally { await dispatch.close(); }"
+          assert s.count(old)==1; p.write_text(s.replace(old,new))
+          Path('.github/workflows/implementation-last-mile.yml').unlink()
+          PY
+      - name: Commit final interaction fix on feature branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- src/page-worker.ts test/workflows.smoke.mjs .github/workflows/implementation-last-mile.yml
+          git commit -m 'fix: retain focus emulation for resumed background interactions'
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" push origin HEAD:refs/heads/feat/run-recovery-and-vision
+      - name: Install locked dependencies
+        run: |
+          npm ci --ignore-scripts
+          uv sync --project worker --locked
+      - name: Audit and unit tests
+        run: |
+          npm audit --omit=dev --audit-level=high
+          npm run check
+      - name: Public workflows and real crash recovery
+        if: always() && !cancelled()
+        run: timeout 180s node test/workflows.smoke.mjs
+      - name: Scoped adapter and native MCP images
+        if: always() && !cancelled()
+        run: timeout 90s node test/adapter.smoke.mjs
+      - name: Actual Midscene with controlled provider
+        if: always() && !cancelled()
+        run: timeout 90s node test/vision.smoke.mjs
