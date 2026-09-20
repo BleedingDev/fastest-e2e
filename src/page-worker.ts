@@ -40,6 +40,7 @@ export async function scoped(page: Page, s: Scoped): Promise<{ root: Page | Fram
   let root: Page | FrameLocator = page;
   for (const selector of s.frames ?? []) {
     const iframe = root.locator(css(selector, s.shadow));
+    if (await iframe.count() === 0) await iframe.first().waitFor({ state: "attached" }).catch(() => undefined);
     if (await iframe.count() !== 1 || !(await iframe.evaluate(e => /^(IFRAME|FRAME)$/.test(e.tagName)))) {
       throw new BrowserError({ code: "unsupported_scope", reason: "The frame path did not identify exactly one frame. Absence inside it is unknown." });
     }
@@ -110,6 +111,7 @@ async function runSteps(page: Page, journal: Journal, job: PageJob, snap: () => 
     const index = (job.startIndex ?? 0) + offset;
     const value = valueFor(s, journal, rebuilding ? retained : journal.recoveryFields());
     const { locator } = await scoped(page, s);
+    if (["click", "fill", "press", "select", "check"].includes(s.kind) && await locator.count() === 0) await locator.first().waitFor({ state: "attached" });
     if (["click", "fill", "press", "select", "check"].includes(s.kind) && await locator.count() !== 1) {
       throw new BrowserError({ code: "ambiguous_target", reason: "Action requires one matching control. Inspect the scoped page; no action was dispatched." });
     }
@@ -285,7 +287,7 @@ export async function pageJob(job: PageJob, signal: AbortSignal): Promise<Data> 
       for (const c of job.checks ?? []) {
         if (c.kind !== "visual") results.push(...await pollChecks(page, [c], state.meta.task.checkTimeoutMs ?? 5_000));
         else {
-          if (c.frames?.length || c.selector) throw new BrowserError({ code: "unsupported_scope", reason: "Visual assertions currently describe the full viewport, not a DOM-scoped crop." });
+          if (c.frames?.length || c.selector || c.shadow && c.shadow !== "none") throw new BrowserError({ code: "unsupported_scope", reason: "Visual assertions currently describe the full viewport, not a DOM-scoped crop." });
           const { value: answer, ref } = await frozenQuery("check", c.value);
           results.push({ kind: "visual", expected: c.value, actual: String(answer), passed: answer === true, method: "vision", evidenceRef: ref });
         }
@@ -296,9 +298,11 @@ export async function pageJob(job: PageJob, signal: AbortSignal): Promise<Data> 
     for (const x of job.extract ?? []) {
       try {
       let value: unknown; let evidenceRef: string | undefined;
-      if (x.kind === "visual") { const result = await frozenQuery("extract", x.prompt!); value = result.value; evidenceRef = result.ref; }
-      else if (x.kind === "url") value = page.url();
-      else if (x.kind === "title") value = await page.title();
+      if (x.kind === "visual") {
+        if (x.frames?.length || x.selector || x.shadow && x.shadow !== "none") throw new BrowserError({ code: "unsupported_scope", reason: "Visual extraction describes the full viewport, not a scoped crop." });
+        const result = await frozenQuery("extract", x.prompt!); value = result.value; evidenceRef = result.ref;
+      }
+      else if (x.kind === "url" || x.kind === "title") { const { root } = await scoped(page, x); value = await root.locator("html").evaluate((_e, kind) => kind === "url" ? location.href : document.title, x.kind); }
       else {
         const { locator } = await scoped(page, x);
         if (await locator.count() !== 1) throw new BrowserError({ code: "extraction", reason: `${x.name} did not identify exactly one element.` });

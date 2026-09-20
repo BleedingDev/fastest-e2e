@@ -4,18 +4,18 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Schema } from "effect";
-import { TestInput, validateTest } from "../dist/contracts.js";
+import { Task, TestTask, validateTask } from "../dist/task.js";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const read = name => readFile(path.join(root, name), "utf8");
 const skills = ["browser-use", "browser-test", "setup-fastest-e2e"];
 
 test("all example scenarios satisfy the runtime contract", async () => {
-  const examples = (await readdir(path.join(root, "examples"))).filter(name => name.endsWith(".test.json"));
+  const examples = (await readdir(path.join(root, "examples"))).filter(name => name.endsWith(".json"));
   assert.ok(examples.length > 0);
   for (const example of examples) {
-    const input = Schema.decodeUnknownSync(TestInput)(JSON.parse(await read(`examples/${example}`)));
-    validateTest(input);
+    const input = Schema.decodeUnknownSync(example.endsWith(".test.json") ? TestTask : Task)(JSON.parse(await read(`examples/${example}`)), { onExcessProperty: "error" });
+    validateTask(input, example.endsWith(".test.json"));
   }
 });
 

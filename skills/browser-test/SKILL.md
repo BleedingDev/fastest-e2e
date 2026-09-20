@@ -1,12 +1,14 @@
 ---
 name: browser-test
-description: Test a PR, feature, bug fix, or regression in a deployed application with fastest-e2e and report evidence.
+description: Test a deployed PR, feature, fix, or regression with fastest-e2e and report fresh evidence, failures, and untested coverage.
 ---
 
 # Browser test
 
-1. Read the diff or requirements. Identify the deployment and account. Find evidence that the deployment contains the change; otherwise label that uncertainty or report an undeployed PR as untested.
-2. Before acting, map each selected requirement to a UI action and observable expectation. Include the relevant success, failure, and nearby regression cases. Keep setup and cleanup in the UI and within authorized production changes.
-3. Read `../browser-use/SKILL.md`. Write a separate scenario for each case using `../../examples/account.test.json` or `../../examples/settings.test.json`. For assertion semantics and checkpoints, read `../../docs/testing.md`. Run `fastest-e2e test --file <scenario.json>`, or MCP `browser_test` with the scenario fields.
-4. Check each returned expected/actual pair. `done` is not a pass; `passed` covers only the supplied assertions. Investigate failed or blocked cases on the retained target. A fallback can fix an automation limitation, not bypass the UI being tested. Preserve the original result and any failed attempts after recovery.
-5. Report the deployment and change reference, each scenario's verdict with evidence, blockers, untested requirements, and production data left behind. Distinguish an observed product defect from an automation failure.
+1. Read the diff/requirements. Identify deployment and account; establish whether the build contains the change. Unknown build identity stays unknown; an undeployed PR is untested.
+2. Map selected requirements to UI actions and explicit expectations before acting. Cover relevant success, failure, and nearby regressions. Keep setup/cleanup in the UI and within authorization.
+3. Read `../browser-use/SKILL.md`. Write cases using `../../docs/testing.md` and its examples. Prefer deterministic steps/scoped checks when controls are known; delegate semantic or visual subgoals only where useful. Run `fastest-e2e test --file <case.json>` or MCP `browser_test`.
+4. Check expected/actual evidence and its method. `passed` covers supplied assertions only. Investigate failures on the retained run; fallback must not bypass the UI being tested. `verify` rechecks without overwriting the original verdict.
+5. Preserve crashes, retries, and recovered passes. Reconstructing a form cannot validate persistence after a crash. Report each case, deployment evidence, blockers, untested requirements, cleanup outcome, and data left behind. Distinguish product defects from automation limitations.
+
+For repeatable procedures, recipe promotion is explicit and reviewed; current requirements still determine the checks. Never weaken expectations to reuse a recipe.

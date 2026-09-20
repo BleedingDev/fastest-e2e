@@ -72,8 +72,22 @@ The generic stdio launch configuration is:
 }
 ```
 
-Adapt the enclosing configuration to your client and inject model keys through its supported environment mechanism. CLI and MCP must use the same home. Tools are `browser_run`, `browser_test`, `browser_inspect`, `browser_close`, and `browser_doctor`. `mcp --allow-scripts` additionally exposes trusted local Python execution through `browser_harness`.
+Adapt the enclosing configuration to your client and inject model keys through its supported environment mechanism. CLI and MCP must use the same home. Tools are `browser_run`, `browser_test`, `browser_inspect`, `browser_close`, `browser_doctor`, `browser_resume`, `browser_verify`, `browser_reconcile`, and `browser_screenshot`. Run-based calls take the returned `runId`; resume also requires `expectedRevision`. `mcp --allow-scripts` additionally exposes trusted local Python execution through `browser_harness`.
 
 ## Recovery
 
-A crashed process can leave `session.lock`. It contains the owning PID. Verify that process and any worker it started have stopped before removing the lock. Locks are not stolen automatically. A stopped or mismatched Chrome produces an error instead of selecting another profile. Restart the configured browser, not a personal browser.
+A crashed process can leave a lease. The runtime reclaims it only after its owner and registered workers are dead. Do not delete a live lease or launch a competing session. A stopped or mismatched Chrome produces an error instead of selecting another profile. Restart the configured browser, not a personal browser.
+
+## Vision
+
+Vision is optional and disabled in existing installations. In the selected home's `config.json`, set `visionEnabled` to `true` without changing its Chrome/profile settings. Provide `MIDSCENE_MODEL_API_KEY`, `MIDSCENE_MODEL_BASE_URL`, `MIDSCENE_MODEL_NAME`, and `MIDSCENE_MODEL_FAMILY` through the invoking environment. Choose a model/family supported by the pinned Midscene version; there is no assumed working provider default.
+
+This authorizes sending screenshots to that configured provider. `doctor` reports readiness but makes no validation/model calls. Try an explicitly authorized small `--engine vision` task before relying on it. MCP and CLI must inherit the same provider settings. Upstream documentation: [model configuration](https://midscenejs.com/model-provider.html).
+
+`jev` is the default; `auto` opts into bounded fallback. Explicit deterministic steps need no model credentials. The Python worker remains required for Jev and Browser Harness lifecycle/fallback commands. The outer agent need not support images for Midscene execution; viewing returned screenshots still depends on its client.
+
+## Update and local data
+
+After pulling an update, run `npm ci && npm run build`, then `fastest-e2e install` for the locked worker. Re-registering symlinked skills is unnecessary. No install command upgrades dependencies during a task.
+
+Run intent, literal inputs, and evidence are stored locally. Use `valueFromEnv` for sensitive fields instead of literal values/goals, and do not put them in the recovery allowlist. `retentionHours` defaults to 24; `fastest-e2e prune` removes expired data. A disconnected or restarted browser does not restore unsaved forms; use [recovery rules](design.md#recovery).

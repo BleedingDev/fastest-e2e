@@ -1,21 +1,23 @@
 # fastest-e2e
 
-Use a logged-in browser or test a deployed feature from your coding agent or terminal. Application setup and cleanup use the UI. No application API or database access is required.
+Browser use and evidence-based E2E tests from a coding agent, CLI, or MCP. Use a dedicated, logged-in Chrome profile, normally headless. Application setup and cleanup stay in the UI.
 
 ```mermaid
 flowchart LR
-    Caller["You or your coding agent"] --> Entry["CLI / MCP"]
-    Entry --> Jev["Jev + Mercury"]
-    Jev --> Harness["Browser Harness"]
-    Entry -. "same-tab fallback" .-> Harness
-    Harness --> Chrome["Dedicated Chrome profile"]
+    Agent["You / coding agent"] --> Run["Effect CLI + MCP / durable run"]
+    Run --> Jev["Jev: autonomous DOM tasks"]
+    Run --> Steps["Playwright: scoped UI steps"]
+    Run --> Vision["Midscene: visual workflows"]
+    Jev --> Chrome["Same dedicated Chrome"]
+    Steps --> Chrome
+    Vision --> Chrome
+    Chrome --> Evidence["Checks + extraction + images"]
+    Evidence --> Run
 ```
-
-The CLI and MCP share an Effect v4 runtime. The Python worker reuses upstream Jev Ultrafast and Browser Harness. The profile contains only the accounts you sign into there, not your personal Chrome sessions.
 
 ## First run
 
-Requires Node 24.18 or newer, uv, and Google Chrome or Chromium. There is no published npm package yet.
+Requires Node 24.18+, uv, and installed Chrome or Chromium. No npm package is published yet.
 
 ```sh
 git clone https://github.com/BleedingDev/fastest-e2e.git
@@ -28,11 +30,7 @@ fastest-e2e install
 fastest-e2e start --headed
 ```
 
-Sign into only the intended accounts in the new Chrome window. Keep Chrome sync off. `init` uses `~/.fastest-e2e`; [setup](docs/setup.md) covers custom profiles and installation troubleshooting.
-
-Make `TYPESAFE_API_KEY` and `TEXT_MODEL_API_KEY` available in the invoking shell or secret manager. The default text provider is OpenRouter. See [.env.example](.env.example) and [environment setup](docs/setup.md) for file-based loading. Keep keys out of chat and git. Page and field context goes to the configured model providers.
-
-Then switch the same profile to headless:
+Sign into only the intended accounts; keep Chrome sync off. Supply `TYPESAFE_API_KEY` and `TEXT_MODEL_API_KEY` through your invoking environment. Then:
 
 ```sh
 fastest-e2e stop
@@ -40,35 +38,29 @@ fastest-e2e start
 fastest-e2e doctor
 ```
 
-In the JSON, `configured`, `workerInstalled`, `connected`, `jevKeyPresent`, and `textKeyPresent` should all be `true`. `doctor` does not validate keys with providers, and its exit code alone does not check key presence. Headed and headless browsers cannot use the directory simultaneously. Logins may expire.
+Inspect the readiness fields, not just the exit code. Key presence does not prove validity. [Setup](docs/setup.md) covers custom profiles, provider configuration, and registering the three skills.
 
 ## Use the browser
 
-Replace the URL with your application:
-
 ```sh
 fastest-e2e run --url https://your-app.example/settings \
-  "Read the current display name. Leave all settings unchanged."
+  "Open account settings. Leave values unchanged."
+fastest-e2e inspect --run RUN_ID --view page
+fastest-e2e screenshot --run RUN_ID
+fastest-e2e close --run RUN_ID
 ```
 
-The command returns a status and `targetId`, not the extracted answer. `done` means Jev stopped, not that the requested outcome was independently verified. Read the page and check the result:
+Replace `RUN_ID` with the returned `runId`. Summaries include progress, attempt history, evidence references, and budgets. Page inspection returns focused controls/text; screenshots return a local image path. MCP `browser_screenshot` returns the image itself, not a path-only response.
 
-```sh
-fastest-e2e inspect --target TARGET_ID
-fastest-e2e close --target TARGET_ID
-```
-
-Replace `TARGET_ID` with the returned identifier. `inspect` returns the URL, title, and page text. For a control value, a screenshot, or an unsupported interaction, use the [same-tab fallback](docs/fallback.md).
+For one-call structured reading, edit [read.task.json](examples/read.task.json), then run `fastest-e2e run --file read.task.json`. The result's `extraction` contains values and evidence, or explicit field errors. No model call is needed for its deterministic checkpoint and DOM extraction.
 
 ## Test a PR or feature
 
-After [registering the skills](docs/setup.md#skills), give your coding agent a concrete request:
+Ask an agent with the skills installed:
 
-> Use browser-test to test PR #123 at https://preview.example/settings with the account already logged in. Confirm the deployment contains this PR. Keep this run read-only and report checks that need permission to change data.
+> Use browser-test to test PR #123 at the deployed preview URL with the logged-in test account. Establish which build is deployed, define checks before acting, and report evidence and untested behavior.
 
-The agent reads the change, chooses checks, runs them, and reports evidence. The CLI itself does not fetch PRs or deploy code. A production URL that lacks the PR cannot validate it.
-
-To run a test yourself, copy [account.test.json](examples/account.test.json) and replace its URL and expected heading:
+The coding agent reads the PR; the browser runtime does not fetch or deploy it. To run a test yourself, adapt [account.test.json](examples/account.test.json):
 
 ```json
 {
@@ -85,55 +77,57 @@ To run a test yourself, copy [account.test.json](examples/account.test.json) and
 fastest-e2e test --file account.test.json
 ```
 
-This is a read-only goal, not an enforced read-only browser mode. For authorized write tests, adapt [settings.test.json](examples/settings.test.json) and agree on cleanup. [Testing reference](docs/testing.md) explains assertion types and persistence checks.
+A read-only goal is guidance, not an enforced read-only browser. Authorize production changes before running them. [Testing](docs/testing.md) covers explicit UI steps, frame/shadow scopes, checkpoints, extraction, and cleanup.
 
-| Result | Meaning | Exit code |
+| Result | Meaning | Exit |
 | --- | --- | --- |
-| `done` | Browser task ended without independent assertions. | 0 |
-| `passed` | Jev finished and every explicit check passed. | 0 |
-| `failed` | An explicit check did not match. | 1 |
-| `blocked` | Execution or verification could not finish. | 2 |
+| `done` | Execution completed without a test verdict. | 0 |
+| `passed` | Every declared test check passed. | 0 |
+| `failed` | A declared check did not match. | 1 |
+| `blocked` | Execution, extraction, or verification could not finish. | 2 |
 
-Results include `checks` with expected and actual values. Failed and blocked tests retain their tab. Inspect it before retrying a mutation. A successful test closes its tab unless `keepTab` is `true`.
+Failed attempts are retained. `verify --run RUN_ID` rechecks saved assertions without replaying actions or replacing the original verdict. Successful tests close their task tab unless `keepTab: true`.
 
-## Use your coding agent
+## Choose execution, not a different browser
 
-| Skill | Ask it to do |
-| --- | --- |
-| [setup-fastest-e2e](skills/setup-fastest-e2e/SKILL.md) | Install or repair the runtime and register the skills. |
-| [browser-use](skills/browser-use/SKILL.md) | Complete a browser task and verify what happened. |
-| [browser-test](skills/browser-test/SKILL.md) | Test a PR, feature, fix, or regression against a specific deployment. |
+Jev remains the default. Explicit `steps` use Playwright without model calls; a `goal` step delegates only that subtask. `frames` and `shadow: "open"` support scoped controls and checks. Closed-root DOM access returns unsupported rather than an accidental absence/pass.
 
-Start with the setup skill. [Registration and MCP configuration](docs/setup.md#skills) cover using the same installation from different agents. `fastest-e2e mcp` exposes high-level tools over stdio. Trusted Python fallback is CLI-accessible; MCP exposes it only with `mcp --allow-scripts`.
+For image/canvas workflows, configure vision once, then use `--engine vision`. `--engine auto` permits same-tab Jev-to-Midscene handoff only when the current autonomous segment stopped before dispatching any action. After partial autonomous work, inspect and explicitly resume with the remaining goal. Failed assertions, uncertain submissions, and cancellation never trigger automatic replay. [Fallback](docs/fallback.md) gives the commands.
 
-## Sessions and limits
+## Recover work, not imaginary browser state
 
-Chrome and Browser Harness stay warm between tasks. Each `run` or `test` opens a new owned tab with the profile's stored authentication; it does not resume an existing tab. Use the returned target for inspection or fallback. Concurrent operations on one configured home are rejected rather than queued. Separate homes **and** profiles are required for independent sessions.
+```sh
+fastest-e2e inspect --run RUN_ID
+fastest-e2e inspect --run RUN_ID --view page
+fastest-e2e resume --run RUN_ID --revision REVISION
+```
 
-The runtime checks browser identity and does not discover personal Chrome. This is browser-session separation, not an operating-system sandbox. Keep CDP on loopback. Trusted fallback scripts run with your local permissions.
+Use the latest returned revision. Resume verifies the live document and state. A reload or crash may make continuation impossible. An explicitly declared reconstruction plan can rebuild allowed fields through the UI; restart requires a declared repeat-safe workflow. See [recover-form.test.json](examples/recover-form.test.json) and [recovery rules](docs/design.md#recovery).
 
-Jev's MVP lacks support for some frames, shadow roots, canvas, uploads, popup tabs, nested scrolling, and custom keyboard controls. Use [fallback](docs/fallback.md), not a silent pass. Timeouts cannot undo production actions. Cancellation during browser initialization may leave an unregistered tab. `maxSteps` cannot raise upstream limits.
+Uncertain Save/autosave effects block replay until predeclared UI evidence reconciles them. Missing inputs remain missing. Recovery cannot hide a failed persistence test. Action, model-call, and active-time budgets span all attempts; unknown model spend is reported as unknown.
 
-The name is not a benchmark claim. CI exercises real Chrome with scripted model decisions. Live-model reliability, production authentication, and performance on your applications remain to be measured. Patchright and visual-agent frameworks are not included.
+## Agent setup and stored data
 
-## Planned work
+Keep the three skills: [browser-use](skills/browser-use/SKILL.md), [browser-test](skills/browser-test/SKILL.md), and [setup-fastest-e2e](skills/setup-fastest-e2e/SKILL.md). `fastest-e2e mcp` exposes the same runtime. Arbitrary Python fallback is separately gated by `mcp --allow-scripts`.
 
-The [design and implementation checklist](docs/design.md) covers agent ergonomics, scoped/visual fallback, and recovery when live browser state is lost. These are proposals, not current capabilities. A saved run must never imply that a crashed page or half-filled form can be restored.
+Runs, literal goals/inputs, and evidence are local under the configured home. **Do not put secrets in goals or literal input fields.** Use `valueFromEnv` for sensitive input; never allowlist it for recovery. Records expire after 24 hours by default; `fastest-e2e prune` deletes expired data. Screenshots and model context may contain account data. This is not an OS sandbox or complete redaction system.
 
-## Develop
+Reviewed recipe reuse is explicit: `recipe propose`, `recipe approve` with a distinct verified trial, then a task naming that recipe. It reuses UI procedures, not answers or permissions. [Design](docs/design.md) documents limits and quarantine behavior.
+
+## Develop and verify
 
 ```sh
 npm ci
+uv sync --project worker --locked
 npm run check
-uv sync --project worker --locked --python 3.12
 uv run --project worker --no-sync python worker/tests/browser_smoke.py
+uv run --project worker --no-sync python worker/tests/managed_smoke.py
 node test/lifecycle.smoke.mjs
+npm run test:browser
 ```
 
-GitHub Actions use full commit SHAs with version comments. A test catches mutable `uses:` references; Dependabot proposes reviewed Action updates without enabling auto-merge. SHA pinning prevents tag replacement from silently changing the selected action, not every supply-chain risk. See [GitHub's security guidance](https://docs.github.com/en/actions/reference/security/secure-use).
+CI uses real Chrome, scripted Jev decisions, and a controlled HTTP model provider with the real Midscene SDK. This proves adapter mechanics, not paid-model quality or compatibility with every production site/client. No performance ranking is claimed. Automatic popup following, arbitrary autonomous file selection, desktop control, and lossless page restoration are not supported.
 
-## References
-
-[rat-stack](https://github.com/joelhooks/rat-stack) inspired shared Effect handlers, exact pins, and typed failures. [Jev Ultrafast](https://github.com/browser-use/jev-ultrafast) supplies the policy and action loop; [Browser Harness](https://github.com/browser-use/browser-harness) supplies CDP and fallback helpers. The human guide follows [show-me](https://github.com/humanlayer/skills/blob/main/plugins/show-me/skills/show-me/SKILL.md). Skill writing follows [unslop](https://github.com/cursor/plugins/blob/main/pstack/skills/unslop/SKILL.md), [writing-for-agents](https://github.com/mattpocock/skills/blob/main/skills/productivity/writing-for-agents/SKILL.md), and Matt Pocock's [setup pattern](https://github.com/mattpocock/skills/blob/main/skills/engineering/setup-matt-pocock-skills/SKILL.md).
+Dependencies are locked; Actions use full commit SHAs and read-only normal CI permissions. Pinning prevents tag substitution, not every supply-chain risk. [rat-stack](https://github.com/joelhooks/rat-stack) inspired the shared Effect runtime. [show-me](https://github.com/humanlayer/skills/blob/main/plugins/show-me/skills/show-me/SKILL.md), [unslop](https://github.com/cursor/plugins/blob/main/pstack/skills/unslop/SKILL.md), and [writing-for-agents](https://github.com/mattpocock/skills/blob/main/skills/productivity/writing-for-agents/SKILL.md) inform the guides.
 
 MIT. See [LICENSE](LICENSE).

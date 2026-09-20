@@ -29,13 +29,13 @@ class Journal:
         if any(e["version"] != 1 or e["seq"] != i + 1 for i, e in enumerate(events)):
             raise BridgeError("journal", "Invalid event sequence.")
         return events
-    def append(self, kind, **data):
+    def append(self, event_type, **data):
         events = self.events()
         raw = self.file.read_bytes()
         complete = raw.rfind(b"\n") + 1
         if complete != len(raw):
             with self.file.open("r+b") as f: f.truncate(complete)
-        record = dict(version=1, seq=len(events)+1, at=round(time.time()*1000), type=kind, data=data)
+        record = dict(version=1, seq=len(events)+1, at=round(time.time()*1000), type=event_type, data=data)
         fd = os.open(self.file, os.O_WRONLY | os.O_APPEND)
         try:
             with os.fdopen(fd, "a") as f:

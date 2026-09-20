@@ -62,6 +62,8 @@ async function createTarget(cdp: Cdp, session: host.Session, j: Journal, navigat
   atomic(path.join(host.home(), "targets", session.namespace, `${targetId}.json`), { targetId, browserId: session.browserId });
   j.append("target", { targetId, browserId: session.browserId });
   const sid = await cdp.attach(targetId);
+  // Only our newly created target: keep background rAF/actionability alive without foregrounding Chrome.
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }, sid);
   if (navigate) {
     const id = randomUUID(); j.append("action.start", { id, kind: "navigate", safeToRepeat: j.meta().task.recovery?.restartSafe === true, engine: "cdp" });
     const result = await cdp.send<{ errorText?: string }>("Page.navigate", { url: j.meta().task.url }, sid);

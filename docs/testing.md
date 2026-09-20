@@ -1,42 +1,46 @@
-# Writing a browser test
+# Browser tasks and tests
 
-Use [account.test.json](../examples/account.test.json) for a read-only example or [settings.test.json](../examples/settings.test.json) for an authorized change. Replace the URLs, selectors, and expected values. Goals guide the model; they are not read-only or domain restrictions enforced by the runtime.
+`run --file task.json` accepts a goal, optional explicit UI `steps`, and optional `extract`. `test --file scenario.json` additionally requires a name and nonempty final `checks`. Both accept `--file -` for stdin. Unknown fields are rejected. [Schemas](../src/task.ts) define the exact contract.
 
-A scenario requires `name`, `url`, `goal`, and a nonempty `checks` array. Each check has `kind`, a **string** `value`, and a `selector` where required. [TestInput and validation](../src/contracts.ts) define the accepted fields and bounds.
+Without steps, Jev executes the goal. With steps, the goal describes intent while the listed steps execute; it is not another implicit action. Steps are `navigate`, `click`, `fill`, `press`, `select`, `check`, `scroll`, `goal`, and `checkpoint`. Consecutive deterministic steps share one adapter invocation. A checkpoint requires checks; a goal step can specify `engine: "vision"` or `"auto"`.
 
-| Kind | What is checked | Selector |
-| --- | --- | --- |
-| `text` | Case-sensitive inclusion in rendered text. | Optional; defaults to the document body. |
-| `url` | Exact current URL, including query and fragment. | Not used. |
-| `value` | Exact control value. Password values are rejected. | Required. |
-| `checked` | Native checkable control state; `"true"` or `"false"`. | Required. |
-| `count` | Number of matching DOM elements as a string, such as `"0"`. Includes hidden matches. | Required. |
+Replace example URLs/selectors before running [account](../examples/account.test.json), [settings](../examples/settings.test.json), [scoped](../examples/scoped.test.json), or [reconstruction](../examples/recover-form.test.json) scenarios. These are templates, not a claim of matching your application.
 
-`value`, `checked`, and scoped `text` require exactly one visible matching element. These are DOM checks, not pixel or layout assertions. `[aria-checked]` alone is not a native `checked` property.
+## Scope and evidence
 
-Current selectors query only the top-level document; they do not enter shadow roots or iframe documents. A zero count does not establish absence inside those unsupported scopes. Scoped and visual verification are proposed in the [design and checklist](design.md), not part of the current scenario format.
+| Check | Semantics |
+| --- | --- |
+| `text` | Case-sensitive inclusion in rendered text; optional selector defaults to body. |
+| `url` | Exact URL, including query/fragment; inside the selected frame when scoped. |
+| `value` | Exact visible control value; sensitive controls rejected. |
+| `checked` | Native checked state as the string `"true"` or `"false"`. |
+| `count` | DOM matches, including hidden elements, as an integer string. |
+| `visible` | Visibility as the string `"true"` or `"false"`; ambiguous matches do not pass. |
+| `visual` | Explicit viewport expectation evaluated by the configured vision model, with the image actually sent retained as evidence. |
 
-## Choose evidence before acting
+All check values are strings. `value`, `checked`, and scoped `text` require one visible element. A custom ARIA state is not a native checked property.
+
+Add `frames: ["#outer", "#inner"]` to enter nested frames, including cross-origin documents. Add `shadow: "open"` to explicitly pierce open roots. Default selectors preserve top-level/light-DOM behavior. A missing/ambiguous frame or closed-root DOM scope is unsupported, not proof of absence. Visual expectations currently describe the full viewport, not selector/frame crops.
+
+Final checks poll for `checkTimeoutMs` (default 5 seconds). Per-step checks establish checkpoints before further actions. Failed checks stop execution; fallback cannot repair the UI to turn them green. Set `keepTab: true` for further inspection or UI cleanup.
+
+## Useful extraction
+
+[read.task.json](../examples/read.task.json) returns named values with evidence in one public call. Extraction kinds are `text`, `value`, `attribute`, `url`, `title`, and `visual`. Visual extraction uses `prompt`; an optional JSON `schema` validates shape, not factual truth. Unsupported or unreadable fields produce partial errors, never invented values. Use focused selectors to stay within output limits.
+
+`valueFromInput` reads a named non-secret task input. `valueFromEnv` reads a local value without putting it into the task record. Plain `value`, `inputs`, and goals are persisted: do not put credentials there. Visual/page evidence can still reveal sensitive UI data; minimize and review it before sharing.
+
+## Test meaning
 
 ```text
-Requirement: Saving a display name persists it.
-Action: Edit the name, save, reload, then reopen settings if necessary.
-Evidence: The control still has the new value after reload.
-Cleanup: Restore the original name through the UI after collecting evidence.
+Requirement: Save persists the display name.
+Actions: edit → save → reload → reopen settings if needed
+Evidence: fresh control value after reload
+Cleanup: restore the original value through authorized UI actions
 ```
 
-Checking the field immediately after typing proves neither saving nor persistence. A success toast supports a save check, but does not prove persistence after reload.
+Immediate field contents or a toast alone do not establish persistence. Collect evidence before cleanup removes it. Cleanup is explicit, not automatic rollback.
 
-Checks run together at the end of the goal and poll for up to `checkTimeoutMs`. They do not run after each intermediate action. They can also collect partial-state evidence when the agent blocks, without turning that result into a pass. Split independent cases into separate scenario files. For intermediate checkpoints in one tab, use a trusted [fallback script](fallback.md) and report its evidence separately. A new `run` or `test` opens a new tab.
+Use `preconditions` for visible account/tenant/build evidence before task actions. `changeRef` remains metadata, not deployment proof. A PR not deployed is untested; unknown deployment identity stays unknown.
 
-Capture evidence before cleanup removes it. Use `keepTab: true` when cleanup or further inspection must happen on that same tab. There are no `setup`, `steps`, `expect`, or `cleanup` executable fields in this scenario format.
-
-## Evaluate the result
-
-`passed` requires Jev to finish and every explicit check to pass. A blocked run remains blocked even if some checks happen to pass. `failed` means a check did not match; inspect the page before attributing it to the application. Invalid selectors and other verification errors can produce `blocked`.
-
-`changeRef` is report metadata, not proof of the deployed revision. Establish deployment identity through available build or deployment evidence. Otherwise report that the change's presence is unverified.
-
-Preserve the original result when retrying or using fallback. Label a manual recovery separately. Never repair application state through JavaScript or an API to make a broken UI appear to pass.
-
-Report each case as passed, failed, blocked, or untested with its expected/actual evidence, the deployment tested, and any data left behind. Screenshots and raw page output may contain account data; review before sharing.
+`verify --run ID` preserves the original verdict. A recovered pass retains failed attempts and is not uninterrupted success. When crash/draft persistence is the requirement, refilling the form would bypass it; test reconstruction separately. Report passed/failed/blocked/untested coverage, evidence method, deployment uncertainty, and leftover data.

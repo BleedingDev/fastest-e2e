@@ -1,0 +1,23 @@
+{
+  "url": "https://your-app.example/settings",
+  "goal": "Read the current display name without modifying settings",
+  "steps": [
+    {
+      "kind": "checkpoint",
+      "checks": [
+        {
+          "kind": "visible",
+          "selector": "input[name=displayName]",
+          "value": "true"
+        }
+      ]
+    }
+  ],
+  "extract": [
+    {
+      "name": "displayName",
+      "kind": "value",
+      "selector": "input[name=displayName]"
+    }
+  ]
+}

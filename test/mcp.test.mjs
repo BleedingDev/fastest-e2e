@@ -33,6 +33,8 @@ test("MCP negotiates stdio and lists high-level tools without script execution b
     assert.ok(result.result, JSON.stringify(result));
     assert.notEqual(result.result.isError, true, JSON.stringify(result));
     assert.equal(typeof result.result.structuredContent.connected, "boolean");
+    const rejected = await request("tools/call", { name: "browser_run", arguments: { url: "https://example.com", goal: "Read heading", hiddenPermission: true } });
+    assert.ok(rejected.error || rejected.result?.isError, "Unknown task fields must not be silently stripped");
     assert.deepEqual(invalidLines, [], diagnostics);
   } finally {
     child.kill("SIGTERM");
