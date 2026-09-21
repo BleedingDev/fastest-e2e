@@ -82,8 +82,20 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
     .filter(s => s.valueFromEnv !== undefined && s.selector !== undefined);
   const handles: ElementHandle[] = [];
   try {
+    // Preflight runs before any environment-backed action, so resolve aliases
+    // with Playwright's full scoping semantics (including open shadow roots).
+    // Capture after the action does not trust this snapshot.
+    const preflightNodes: { node: ElementHandle; frame: Frame | null }[] = [];
+    if (!save) {
+      for (const step of protectedSteps) {
+        const { locator } = await scoped(page, step);
+        const nodes = await locator.elementHandles();
+        handles.push(...nodes);
+        for (const node of nodes) preflightNodes.push({ node, frame: await node.ownerFrame() });
+      }
+    }
     const protectedScopes: { selector: string; frame: Frame | null }[] = [];
-    for (const step of protectedSteps) {
+    if (save) for (const step of protectedSteps) {
       const { root } = await scoped(page, { frames: step.frames, shadow: step.shadow });
       const documentElement = await root.locator("html").elementHandle();
       if (!documentElement) continue;
@@ -100,6 +112,14 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
       if (nodes.length !== 1) continue;
       const node = nodes[0]!;
       const frame = await node.ownerFrame();
+      if (!save) {
+        const candidates = preflightNodes.filter(p => p.frame === frame).map(p => p.node);
+        const protectedAlias = await node.evaluate((element, others) => others.includes(element), candidates);
+        if (protectedAlias) {
+          throw new BrowserError({ code: "retention_forbidden", reason: "An environment-backed control overlaps the recovery allowlist. Remove it and use its environment reference for reconstruction." });
+        }
+        continue;
+      }
       const selectors = protectedScopes.filter(p => p.frame === frame).map(p => p.selector);
       // Pin the recovery target once. Inside that same browser evaluation,
       // resolve current protected selectors against the pinned node and compare
@@ -114,7 +134,6 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
         const hasValue = "value" in control;
         const rawValue = hasValue ? String((control as HTMLInputElement).value) : "";
         if (selectorProtected || input.protectedValues.includes(rawValue)) return { actual: "", protected: true };
-        if (!input.save) return { actual: "" };
         const sensitive = control.matches('input[type=password], input[type=file], [autocomplete="one-time-code"]');
         const rect = control.getBoundingClientRect();
         const visible = !!rect.width && !!rect.height && control.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
@@ -122,11 +141,10 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
         if (sensitive) return { actual: "", error: "Sensitive control values cannot be collected." };
         if (!hasValue) return { actual: "", error: "Target is not a value control." };
         return { actual: rawValue };
-      }, { selectors, protectedValues, save });
+      }, { selectors, protectedValues });
       if (result.protected) {
         throw new BrowserError({ code: "retention_forbidden", reason: "An environment-backed control overlaps the recovery allowlist. Remove it and use its environment reference for reconstruction." });
       }
-      if (!save) continue;
       if (result.error) throw new BrowserError({ code: "retention_forbidden", reason: "A recovery allowlist includes a sensitive or unsupported control. Remove it; no value was saved." });
       if (result.available === false) continue;
       journal.saveField(f.key, result.actual, "observed");
