@@ -1,0 +1,31 @@
+name: Review fixture
+on:
+  push:
+    branches: [fix/pr-2-review-followups]
+    paths: [.github/workflows/review-fixture.yml]
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+      - run: |
+          npm ci --ignore-scripts
+          mkdir -p /tmp/review-fixture/bin
+          git archive HEAD | tar -x -C /tmp/review-fixture
+          cp "$(command -v node)" /tmp/review-fixture/bin/node
+          cp -a node_modules /tmp/review-fixture/
+          tar -czf /tmp/review-fixture.tar.gz -C /tmp/review-fixture .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: review-fixture
+          path: /tmp/review-fixture.tar.gz
+          retention-days: 1
+          compression-level: 0
