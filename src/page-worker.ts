@@ -82,13 +82,17 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
     .filter(s => s.valueFromEnv !== undefined && s.selector !== undefined);
   const handles: ElementHandle[] = [];
   try {
-    const protectedNodes: { node: ElementHandle; frame: Frame | null }[] = [];
+    const protectedScopes: { selector: string; frame: Frame | null }[] = [];
     for (const step of protectedSteps) {
-      const { locator } = await scoped(page, step);
-      const nodes = await locator.elementHandles();
-      handles.push(...nodes);
-      for (const node of nodes) protectedNodes.push({ node, frame: await node.ownerFrame() });
+      const { root } = await scoped(page, { frames: step.frames, shadow: step.shadow });
+      const documentElement = await root.locator("html").elementHandle();
+      if (!documentElement) continue;
+      handles.push(documentElement);
+      protectedScopes.push({ selector: step.selector!, frame: await documentElement.ownerFrame() });
     }
+    const protectedValues = protectedSteps
+      .map(step => process.env[step.valueFromEnv!])
+      .filter((value): value is string => value !== undefined && value.length > 0);
     for (const f of fields) {
       const { locator } = await scoped(page, f);
       const nodes = await locator.elementHandles();
@@ -96,23 +100,29 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
       if (nodes.length !== 1) continue;
       const node = nodes[0]!;
       const frame = await node.ownerFrame();
-      const candidates = protectedNodes.filter(p => p.frame === frame).map(p => p.node);
-      // Pin the recovery target to one DOM node, then compare identity and read
-      // its value in the same page evaluation. A rerender cannot swap the
-      // recovery selector to an environment-backed control between the guard
-      // and the read.
+      const selectors = protectedScopes.filter(p => p.frame === frame).map(p => p.selector);
+      // Pin the recovery target once. Inside that same browser evaluation,
+      // resolve current protected selectors against the pinned node and compare
+      // its value against environment-backed values before anything crosses
+      // the protocol boundary or is persisted.
       const result = await node.evaluate((element, input) => {
         const control = element as Element;
-        if (input.others.includes(element)) return { actual: "", protected: true };
+        const selectorProtected = input.selectors.some(selector => {
+          try { return Array.from(control.ownerDocument.querySelectorAll(selector)).includes(control); }
+          catch { return false; }
+        });
+        const hasValue = "value" in control;
+        const rawValue = hasValue ? String((control as HTMLInputElement).value) : "";
+        if (selectorProtected || input.protectedValues.includes(rawValue)) return { actual: "", protected: true };
         if (!input.save) return { actual: "" };
         const sensitive = control.matches('input[type=password], input[type=file], [autocomplete="one-time-code"]');
         const rect = control.getBoundingClientRect();
         const visible = !!rect.width && !!rect.height && control.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
         if (!visible) return { actual: "", available: false };
         if (sensitive) return { actual: "", error: "Sensitive control values cannot be collected." };
-        if (!("value" in control)) return { actual: "", error: "Target is not a value control." };
-        return { actual: String((control as HTMLInputElement).value) };
-      }, { others: candidates, save });
+        if (!hasValue) return { actual: "", error: "Target is not a value control." };
+        return { actual: rawValue };
+      }, { selectors, protectedValues, save });
       if (result.protected) {
         throw new BrowserError({ code: "retention_forbidden", reason: "An environment-backed control overlaps the recovery allowlist. Remove it and use its environment reference for reconstruction." });
       }
