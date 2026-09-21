@@ -28,11 +28,12 @@ jobs:
       - name: Typecheck and unit/protocol tests
         if: always() && !cancelled()
         run: npm run check
-      - name: Legacy upstream browser and CLI lifecycle
+      - name: Legacy upstream browser
         if: always() && !cancelled()
-        run: |
-          uv run --project worker --no-sync python worker/tests/browser_smoke.py
-          node test/lifecycle.smoke.mjs
+        run: uv run --project worker --no-sync python worker/tests/browser_smoke.py
+      - name: Public CLI lifecycle
+        if: always() && !cancelled()
+        run: node test/lifecycle.smoke.mjs
       - name: Managed upstream Jev and crash receipts
         if: always() && !cancelled()
         run: uv run --project worker --no-sync python worker/tests/managed_smoke.py
