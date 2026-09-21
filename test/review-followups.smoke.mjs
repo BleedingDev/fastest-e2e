@@ -33,6 +33,19 @@ try {
   }
   passed.push('alias selectors, frame aliases, and open-root aliases cannot retain environment values');
 
+  const raced = await execute({ name: 'Recovery selector cannot swap after identity guard', url: f.url + '/recovery-race', goal: 'Fill an environment-backed field', keepTab: true,
+    steps: [{ kind: 'fill', selector: '#token', valueFromEnv: key }],
+    checks: [{ kind: 'text', selector: 'h1', value: 'Recovery race' }],
+    recovery: { fields: [{ key: 'active', selector: '.active-input' }] },
+  });
+  assert.equal(raced.status, 'passed', JSON.stringify(raced));
+  const racedJournal = new Journal(f.directory, raced.runId);
+  assert.equal(racedJournal.recoveryFields().active.value, 'public-sentinel');
+  const racedFiles = fs.readdirSync(racedJournal.dir, { recursive: true }).filter(file => fs.statSync(path.join(racedJournal.dir, file)).isFile());
+  for (const file of racedFiles) assert.equal(fs.readFileSync(path.join(racedJournal.dir, file), 'utf8').includes(secret), false, file);
+  await Effect.runPromise(closeRun(raced.runId));
+  passed.push('recovery target identity is pinned atomically with its value read');
+
   const unrelated = await execute({ name: 'Independent recovery stays usable', url: f.url, goal: 'Fill independent controls', keepTab: true,
     steps: [{ kind: 'fill', selector: '#other', valueFromEnv: key }, { kind: 'fill', selector: '#name', value: 'Recoverable' }],
     checks: [{ kind: 'value', selector: '#name', value: 'Recoverable' }],
