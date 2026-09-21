@@ -75,7 +75,7 @@ export async function pollChecks(page: Page, checks: readonly Check[], timeoutMs
     await new Promise(resolve => setTimeout(resolve, 100));
   }
 }
-async function captureFields(page: Page, journal: Journal): Promise<void> {
+async function captureFields(page: Page, journal: Journal, save = true): Promise<void> {
   const task = journal.meta().task;
   const fields = task.recovery?.fields ?? [];
   const protectedSteps = [...(task.steps ?? []), ...(task.recovery?.reconstruct ?? [])]
@@ -102,18 +102,21 @@ async function captureFields(page: Page, journal: Journal): Promise<void> {
       // recovery selector to an environment-backed control between the guard
       // and the read.
       const result = await node.evaluate((element, others) => {
+        const control = element as Element;
         if (others.includes(element)) return { actual: "", protected: true };
-        const sensitive = element.matches('input[type=password], input[type=file], [autocomplete="one-time-code"]');
-        const rect = element.getBoundingClientRect();
-        const visible = !!rect.width && !!rect.height && element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+        if (!save) return { actual: "" };
+        const sensitive = control.matches('input[type=password], input[type=file], [autocomplete="one-time-code"]');
+        const rect = control.getBoundingClientRect();
+        const visible = !!rect.width && !!rect.height && control.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
         if (!visible) return { actual: "", available: false };
         if (sensitive) return { actual: "", error: "Sensitive control values cannot be collected." };
-        if (!("value" in element)) return { actual: "", error: "Target is not a value control." };
-        return { actual: String((element as HTMLInputElement).value) };
+        if (!("value" in control)) return { actual: "", error: "Target is not a value control." };
+        return { actual: String((control as HTMLInputElement).value) };
       }, candidates);
       if (result.protected) {
         throw new BrowserError({ code: "retention_forbidden", reason: "An environment-backed control overlaps the recovery allowlist. Remove it and use its environment reference for reconstruction." });
       }
+      if (!save) continue;
       if (result.error) throw new BrowserError({ code: "retention_forbidden", reason: "A recovery allowlist includes a sensitive or unsupported control. Remove it; no value was saved." });
       if (result.available === false) continue;
       journal.saveField(f.key, result.actual, "observed");
@@ -151,7 +154,7 @@ async function runSteps(page: Page, journal: Journal, job: PageJob, snap: () => 
       throw new BrowserError({ code: "ambiguous_target", reason: "Action requires one matching control. Inspect the scoped page; no action was dispatched." });
     }
     if (!rebuilding) await captureFields(page, journal);
-    else if (s.valueFromEnv) await assertRecoveryTargets(page, journal);
+    else if (s.valueFromEnv) await captureFields(page, journal, false);
     if (s.kind === "fill") for (const f of journal.meta().task.recovery?.fields ?? []) {
       if (f.selector === s.selector && JSON.stringify(f.frames) === JSON.stringify(s.frames) && f.shadow === s.shadow && !s.valueFromEnv) {
         const result = await locator.evaluate(readElement, { kind: "value" });
