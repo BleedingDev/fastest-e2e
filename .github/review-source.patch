@@ -1,0 +1,301 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index aaba517..ef9b964 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -45,3 +45,6 @@ jobs:
+       - name: Actual Midscene with controlled provider
+         if: always() && !cancelled()
+         run: timeout 90s node test/vision.smoke.mjs
++      - name: Review regressions for retention and preflight
++        if: always() && !cancelled()
++        run: timeout 90s node test/review-followups.smoke.mjs
+diff --git a/package.json b/package.json
+index 58cb053..0f22e5a 100644
+--- a/package.json
++++ b/package.json
+@@ -26,7 +26,7 @@
+     "test:python": "python3 -m unittest discover -s worker/tests -v",
+     "check": "npm run typecheck && npm test && npm run test:python",
+     "prepack": "npm run build",
+-    "test:browser": "node test/adapter.smoke.mjs && node test/workflows.smoke.mjs && node test/vision.smoke.mjs"
++    "test:browser": "node test/adapter.smoke.mjs && node test/workflows.smoke.mjs && node test/vision.smoke.mjs && node test/review-followups.smoke.mjs"
+   },
+   "dependencies": {
+     "@effect/platform-node": "4.0.0-rc.116",
+diff --git a/src/page-worker.ts b/src/page-worker.ts
+index 2bccb64..0b95b64 100644
+--- a/src/page-worker.ts
++++ b/src/page-worker.ts
+@@ -2,7 +2,7 @@ import * as fs from "node:fs";
+ import path from "node:path";
+ import { pathToFileURL } from "node:url";
+ import { randomUUID } from "node:crypto";
+-import type { Browser, Page, Locator, FrameLocator } from "playwright-core";
++import type { Browser, Page, Locator, FrameLocator, ElementHandle, Frame } from "playwright-core";
+ import { BrowserError, type Check } from "./contracts.js";
+ import { Journal, remaining, digest, atomic, type Data } from "./journal.js";
+ import { Cdp, checkpoint, liveStateExpression } from "./cdp.js";
+@@ -75,7 +75,38 @@ export async function pollChecks(page: Page, checks: readonly Check[], timeoutMs
+     await new Promise(resolve => setTimeout(resolve, 100));
+   }
+ }
++async function assertRecoveryTargets(page: Page, journal: Journal): Promise<void> {
++  const task = journal.meta().task;
++  const fields = task.recovery?.fields ?? [];
++  const protectedSteps = [...(task.steps ?? []), ...(task.recovery?.reconstruct ?? [])]
++    .filter(s => s.valueFromEnv !== undefined && s.selector !== undefined);
++  if (!fields.length || !protectedSteps.length) return;
++  const handles: ElementHandle[] = [];
++  try {
++    const protectedNodes: { node: ElementHandle; frame: Frame | null }[] = [];
++    for (const step of protectedSteps) {
++      const { locator } = await scoped(page, step);
++      const nodes = await locator.elementHandles();
++      handles.push(...nodes);
++      for (const node of nodes) protectedNodes.push({ node, frame: await node.ownerFrame() });
++    }
++    for (const field of fields) {
++      const { locator } = await scoped(page, field);
++      const nodes = await locator.elementHandles(); handles.push(...nodes);
++      for (const node of nodes) {
++        // Different CSS/frame paths can resolve to the same control. Compare
++        // DOM identity, without reading either value or persisting a handle.
++        const frame = await node.ownerFrame();
++        const candidates = protectedNodes.filter(p => p.frame === frame).map(p => p.node);
++        if (candidates.length && await node.evaluate((element, others) => others.includes(element), candidates)) {
++          throw new BrowserError({ code: "retention_forbidden", reason: "An environment-backed control overlaps the recovery allowlist. Remove it and use its environment reference for reconstruction." });
++        }
++      }
++    }
++  } finally { await Promise.allSettled(handles.map(handle => handle.dispose())); }
++}
+ async function captureFields(page: Page, journal: Journal): Promise<void> {
++  await assertRecoveryTargets(page, journal);
+   for (const f of journal.meta().task.recovery?.fields ?? []) {
+     const { locator } = await scoped(page, f);
+     if (await locator.count() !== 1) continue;
+@@ -116,6 +147,7 @@ async function runSteps(page: Page, journal: Journal, job: PageJob, snap: () =>
+       throw new BrowserError({ code: "ambiguous_target", reason: "Action requires one matching control. Inspect the scoped page; no action was dispatched." });
+     }
+     if (!rebuilding) await captureFields(page, journal);
++    else if (s.valueFromEnv) await assertRecoveryTargets(page, journal);
+     if (s.kind === "fill") for (const f of journal.meta().task.recovery?.fields ?? []) {
+       if (f.selector === s.selector && JSON.stringify(f.frames) === JSON.stringify(s.frames) && f.shadow === s.shadow && !s.valueFromEnv) {
+         const result = await locator.evaluate(readElement, { kind: "value" });
+diff --git a/src/task.ts b/src/task.ts
+index 336b08f..86ff935 100644
+--- a/src/task.ts
++++ b/src/task.ts
+@@ -75,6 +75,8 @@ export function validateTask(task: Task, testing: boolean): void {
+     if (x.schema && JSON.stringify(x.schema).length > 20_000) invalid("Extraction schema too large.");
+   }
+   if (task.inputs && (Object.keys(task.inputs).length > 30 || Object.values(task.inputs).some(v => v.length > 20_000))) invalid("Inputs exceed their storage budget.");
++  const targetKey = (s: { selector?: string | undefined; frames?: readonly string[] | undefined; shadow?: string | undefined }) =>
++    JSON.stringify([s.selector?.trim(), (s.frames ?? []).map(f => f.trim()), s.shadow ?? "none"]);
+   const fieldKeys = new Set<string>();
+   for (const f of task.recovery?.fields ?? []) {
+     scope(f);
+@@ -99,6 +101,9 @@ export function validateTask(task: Task, testing: boolean): void {
+       if (["navigate", "fill", "press", "select", "check", "scroll"].includes(s.kind) && values.length !== 1) invalid(`${s.kind} requires exactly one value source.`);
+       if (s.valueFromInput && (!/^[a-zA-Z][\w-]{0,63}$/.test(s.valueFromInput) || task.inputs?.[s.valueFromInput] === undefined)) invalid("A named step input is missing.");
+       if (s.valueFromEnv && !/^[A-Z_][A-Z_0-9]{0,127}$/.test(s.valueFromEnv)) invalid("Invalid environment reference.");
++      if (s.valueFromEnv && s.selector && task.recovery?.fields?.some(f => targetKey(f) === targetKey(s))) {
++        invalid("An environment-backed control cannot be a recovery field. Remove it from recovery.fields; use its environment reference for reconstruction.");
++      }
+       if (s.valueFromRecovery && !fieldKeys.has(s.valueFromRecovery)) invalid("Recovery key is not allowlisted.");
+       if (s.kind === "goal" && !s.goal?.trim()) invalid("goal step requires a goal.");
+       if (s.kind === "checkpoint" && !s.checks?.length) invalid("checkpoint requires assertions.");
+diff --git a/src/workflows.ts b/src/workflows.ts
+index 7bc6bb0..532df81 100644
+--- a/src/workflows.ts
++++ b/src/workflows.ts
+@@ -249,7 +249,11 @@ export function runTask(input: Task, testing = false) {
+     const config = yield* io(host.configuration);
+     const profile = yield* io(() => fs.promises.realpath(config.profileDir));
+     const { journal, duplicate } = yield* sync(() => createRun(host.home(), task, testing, profile));
+-    if (duplicate) return { ...summary(journal.state()), duplicate: true };
++    // Only preflight failures are retryable through the idempotency key. Once
++    // execution started (or an unknown event exists), recovery must be explicit.
++    if (duplicate && !journal.events().every(e => e.type === "created" || e.type === "preflight.failed")) {
++      return { ...summary(journal.state()), duplicate: true };
++    }
+     return yield* io(host.connect).pipe(Effect.flatMap(session => attempt(journal, session, "new")), Effect.tap(result => sync(() => {
+       if (task.recipe && ["precondition_failed", "ambiguous_target", "assertion_failed"].includes(journal.state().reasonCode)) quarantineRecipe(host.home(), task.recipe, journal.state().reasonCode);
+     })), Effect.catchTag("BrowserError", e => sync(() => {
+diff --git a/worker/jev_runner.py b/worker/jev_runner.py
+index 6a0d6e4..2fd9c6a 100644
+--- a/worker/jev_runner.py
++++ b/worker/jev_runner.py
+@@ -70,17 +70,23 @@ def checkpoint(browser, journal):
+     journal.append("checkpoint", documentId=document_id, fingerprint=hashlib.sha256(live.encode()).hexdigest(), url=json.loads(live)["url"])
+ 
+ def capture(browser, journal, action=None, text=None):
+-    fields = journal.meta["task"].get("recovery", {}).get("fields", [])
++    task = journal.meta["task"]
++    fields = task.get("recovery", {}).get("fields", [])
++    # Capture also runs after a scoped/environment-backed step hands off to Jev.
++    # Protect aliases in the top-level document without reading secret values.
++    protected = [s["selector"] for s in [*task.get("steps", []), *task.get("recovery", {}).get("reconstruct", [])]
++                 if s.get("valueFromEnv") is not None and s.get("selector") and not s.get("frames")]
+     for field in fields:
+         if field.get("frames") or field.get("shadow") == "open":
+             continue  # Jev cannot type into these; the scoped adapter captures them.
+         result = browser.evaluate("""(x=>{
+           const nodes=[...document.querySelectorAll(x.selector)];
+           if(nodes.length!==1)return null; const e=nodes[0];
++          if(x.protected.some(selector=>e.matches(selector)))return {forbidden:true};
+           if(e.matches('input[type=password],input[type=file],[autocomplete=one-time-code]'))return {forbidden:true};
+           if(!('value' in e))return {forbidden:true};
+           return {value:String(e.value),matches:x.node!=null&&window.__jevFast?.nodes.get(x.node)===e};
+-        })(""" + json.dumps(dict(selector=field["selector"], node=action.get("node") if action else None)) + ")")
++        })(""" + json.dumps(dict(selector=field["selector"], protected=protected, node=action.get("node") if action else None)) + ")")
+         if not result: continue
+         if result.get("forbidden"): raise BridgeError("retention_forbidden", "A recovery field targets sensitive or unsupported input.")
+         intended = action and action.get("kind") == "fill" and result.get("matches") and text is not None
+diff --git a/worker/tests/browser_smoke.py b/worker/tests/browser_smoke.py
+index 94f1da5..f162fdb 100644
+--- a/worker/tests/browser_smoke.py
++++ b/worker/tests/browser_smoke.py
+@@ -3,6 +3,8 @@ import contextlib
+ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+ import json
+ import os
++import re
++import urllib.request
+ from pathlib import Path
+ import shutil
+ import subprocess
+@@ -44,6 +46,34 @@ def choose(page, _goal, history):
+             "operation": kind or "DONE", "target": choice, "usage": {}}
+ 
+ 
++def wait_for_browser(browser, profile, log_path=None, timeout=30):
++    """Wait for complete endpoint metadata, not just the existence of its file."""
++    deadline = time.monotonic() + timeout
++    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
++    reason = "Chrome did not expose a ready CDP endpoint before the deadline"
++    while time.monotonic() < deadline:
++        if browser.poll() is not None:
++            reason = f"Chrome exited before CDP readiness (exit {browser.returncode})"
++            break
++        try:
++            lines = (profile / "DevToolsActivePort").read_text().strip().splitlines()
++            port, browser_path = int(lines[0]), lines[1]
++            if not 1 <= port <= 65535 or not re.fullmatch(r"/devtools/browser/[a-zA-Z0-9-]+", browser_path):
++                raise ValueError("incomplete or invalid endpoint")
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                break
++            with opener.open(f"http://127.0.0.1:{port}/json/version", timeout=min(1, remaining)) as response:
++                actual = json.load(response).get("webSocketDebuggerUrl")
++            if actual == f"ws://127.0.0.1:{port}{browser_path}":
++                return str(port), browser_path
++        except (OSError, ValueError, IndexError):
++            pass  # Chrome can create the file before writing both lines or serving CDP.
++        time.sleep(min(.05, max(0, deadline - time.monotonic())))
++    diagnostic = log_path.read_text(errors="replace")[-4096:] if log_path and log_path.exists() else ""
++    raise RuntimeError(f"Fixture browser readiness failed: {reason}\n{diagnostic}")
++
++
+ def main():
+     chrome = os.environ.get("CHROME_PATH") or shutil.which("google-chrome") or shutil.which("chromium")
+     if not chrome:
+@@ -59,16 +89,11 @@ def main():
+         # as root. The production launcher never adds this flag.
+         if hasattr(os, "geteuid") and os.geteuid() == 0:
+             flags.insert(1, "--no-sandbox")
+-        browser = subprocess.Popen(flags, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++        log_path = root / "chrome.log"
++        browser_log = log_path.open("w")
++        browser = subprocess.Popen(flags, stdout=subprocess.DEVNULL, stderr=browser_log)
+         try:
+-            active = profile / "DevToolsActivePort"
+-            for _ in range(200):
+-                if active.exists():
+-                    break
+-                if browser.poll() is not None:
+-                    raise RuntimeError("Fixture Chrome exited before exposing CDP")
+-                time.sleep(0.05)
+-            port, browser_path = active.read_text().strip().splitlines()[:2]
++            port, browser_path = wait_for_browser(browser, profile, log_path)
+             for key in list(os.environ):
+                 if key.startswith(("BU_", "BH_", "BROWSER_HARNESS", "BROWSER_USE")):
+                     del os.environ[key]
+@@ -116,6 +141,7 @@ def main():
+             except subprocess.TimeoutExpired:
+                 browser.kill()
+                 browser.wait()
++            browser_log.close()
+             server.shutdown()
+             server.server_close()
+ 
+diff --git a/worker/tests/managed_smoke.py b/worker/tests/managed_smoke.py
+index 8189040..56d68f9 100644
+--- a/worker/tests/managed_smoke.py
++++ b/worker/tests/managed_smoke.py
+@@ -16,7 +16,7 @@ from unittest.mock import patch
+ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+ import bridge
+ import jev_runner
+-from browser_smoke import Handler, choose
++from browser_smoke import Handler, choose, wait_for_browser
+ 
+ 
+ def main():
+@@ -31,13 +31,11 @@ def main():
+         flags = [chrome, "--headless=new", "--remote-debugging-port=0", f"--user-data-dir={profile}", "--no-first-run", "about:blank"]
+         if hasattr(os, "geteuid") and os.geteuid() == 0:
+             flags.insert(1, "--no-sandbox")
+-        browser = subprocess.Popen(flags, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++        log_path = root / "chrome.log"
++        browser_log = log_path.open("w")
++        browser = subprocess.Popen(flags, stdout=subprocess.DEVNULL, stderr=browser_log)
+         try:
+-            active = profile / "DevToolsActivePort"
+-            for _ in range(200):
+-                if active.exists(): break
+-                time.sleep(.05)
+-            port, browser_path = active.read_text().strip().splitlines()[:2]
++            port, browser_path = wait_for_browser(browser, profile, log_path)
+             for key in list(os.environ):
+                 if key.startswith(("BU_", "BH_", "BROWSER_HARNESS", "BROWSER_USE")):
+                     del os.environ[key]
+@@ -85,6 +83,21 @@ const s=JSON.parse(process.argv[1]); const c=await Cdp.open(s);try{console.log(J
+             saved = next(e["data"] for e in reversed(events) if e["type"] == "checkpoint")
+             assert observed["documentId"] == saved["documentId"], (observed, saved)
+             assert observed["fingerprint"] == saved["fingerprint"], (observed, saved)
++            # Saved v0.2.0 tasks and selector aliases must not bypass capture protection.
++            secret = "managed-secret-sentinel"
++            page.evaluate("document.querySelector('#name').value=" + json.dumps(secret))
++            for location in ("steps", "reconstruct"):
++                protected_step = {"kind": "fill", "selector": "input", "valueFromEnv": "PRIVATE_INPUT"}
++                recovery = {"fields": [{"key": "name", "selector": "#name"}]}
++                extra = {"steps": [protected_step]} if location == "steps" else {}
++                if location == "reconstruct": recovery["reconstruct"] = [protected_step]
++                protected_journal, _ = make_run(recovery=recovery, **extra)
++                try: jev_runner.capture(page, protected_journal)
++                except bridge.BridgeError as error: assert error.code == "retention_forbidden", error.code
++                else: raise AssertionError("Environment-backed selector alias was captured")
++                assert not (protected_journal.directory / "recovery.json").exists()
++                assert secret not in protected_journal.file.read_text()
++            page.evaluate("document.querySelector('#name').value='CI value'")
+             # Upstream retries StalePage, but the wrapper must never retry it after dispatch.
+             second, req = make_run()
+             original_act = Browser.act
+@@ -106,7 +119,7 @@ const s=JSON.parse(process.argv[1]); const c=await Cdp.open(s);try{console.log(J
+                 except bridge.BridgeError as error: assert error.code == "budget_exhausted", error.code
+                 else: raise AssertionError("Call budget ignored")
+             page.close()
+-            print(json.dumps({"suite": "managed Jev", "paidModelCalls": 0, "checks": ["actual upstream loop", "same owned tab", "durable dispatch receipts", "allowlisted fields", "cross-language checkpoints", "no post-dispatch stale retry", "shared call budget"]}))
++            print(json.dumps({"suite": "managed Jev", "paidModelCalls": 0, "checks": ["actual upstream loop", "same owned tab", "durable dispatch receipts", "allowlisted fields", "cross-language checkpoints", "no post-dispatch stale retry", "shared call budget", "environment-backed capture aliases rejected"]}))
+         finally:
+             with contextlib.suppress(Exception):
+                 from browser_harness.admin import restart_daemon
+@@ -114,6 +127,7 @@ const s=JSON.parse(process.argv[1]); const c=await Cdp.open(s);try{console.log(J
+             browser.terminate()
+             try: browser.wait(timeout=5)
+             except subprocess.TimeoutExpired: browser.kill(); browser.wait()
++            browser_log.close()
+             server.shutdown(); server.server_close()
+ 
+ 
