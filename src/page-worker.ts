@@ -101,10 +101,10 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
       // its value in the same page evaluation. A rerender cannot swap the
       // recovery selector to an environment-backed control between the guard
       // and the read.
-      const result = await node.evaluate((element, others) => {
+      const result = await node.evaluate((element, input) => {
         const control = element as Element;
-        if (others.includes(element)) return { actual: "", protected: true };
-        if (!save) return { actual: "" };
+        if (input.others.includes(element)) return { actual: "", protected: true };
+        if (!input.save) return { actual: "" };
         const sensitive = control.matches('input[type=password], input[type=file], [autocomplete="one-time-code"]');
         const rect = control.getBoundingClientRect();
         const visible = !!rect.width && !!rect.height && control.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
@@ -112,7 +112,7 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
         if (sensitive) return { actual: "", error: "Sensitive control values cannot be collected." };
         if (!("value" in control)) return { actual: "", error: "Target is not a value control." };
         return { actual: String((control as HTMLInputElement).value) };
-      }, candidates);
+      }, { others: candidates, save });
       if (result.protected) {
         throw new BrowserError({ code: "retention_forbidden", reason: "An environment-backed control overlaps the recovery allowlist. Remove it and use its environment reference for reconstruction." });
       }
