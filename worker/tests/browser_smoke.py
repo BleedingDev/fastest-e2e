@@ -3,6 +3,8 @@ import contextlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import re
+import urllib.request
 from pathlib import Path
 import shutil
 import subprocess
@@ -44,6 +46,34 @@ def choose(page, _goal, history):
             "operation": kind or "DONE", "target": choice, "usage": {}}
 
 
+def wait_for_browser(browser, profile, log_path=None, timeout=30):
+    """Wait for complete endpoint metadata, not just the existence of its file."""
+    deadline = time.monotonic() + timeout
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    reason = "Chrome did not expose a ready CDP endpoint before the deadline"
+    while time.monotonic() < deadline:
+        if browser.poll() is not None:
+            reason = f"Chrome exited before CDP readiness (exit {browser.returncode})"
+            break
+        try:
+            lines = (profile / "DevToolsActivePort").read_text().strip().splitlines()
+            port, browser_path = int(lines[0]), lines[1]
+            if not 1 <= port <= 65535 or not re.fullmatch(r"/devtools/browser/[a-zA-Z0-9-]+", browser_path):
+                raise ValueError("incomplete or invalid endpoint")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            with opener.open(f"http://127.0.0.1:{port}/json/version", timeout=min(1, remaining)) as response:
+                actual = json.load(response).get("webSocketDebuggerUrl")
+            if actual == f"ws://127.0.0.1:{port}{browser_path}":
+                return str(port), browser_path
+        except (OSError, ValueError, IndexError):
+            pass  # Chrome can create the file before writing both lines or serving CDP.
+        time.sleep(min(.05, max(0, deadline - time.monotonic())))
+    diagnostic = log_path.read_text(errors="replace")[-4096:] if log_path and log_path.exists() else ""
+    raise RuntimeError(f"Fixture browser readiness failed: {reason}\n{diagnostic}")
+
+
 def main():
     chrome = os.environ.get("CHROME_PATH") or shutil.which("google-chrome") or shutil.which("chromium")
     if not chrome:
@@ -59,16 +89,11 @@ def main():
         # as root. The production launcher never adds this flag.
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             flags.insert(1, "--no-sandbox")
-        browser = subprocess.Popen(flags, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log_path = root / "chrome.log"
+        browser_log = log_path.open("w")
+        browser = subprocess.Popen(flags, stdout=subprocess.DEVNULL, stderr=browser_log)
         try:
-            active = profile / "DevToolsActivePort"
-            for _ in range(200):
-                if active.exists():
-                    break
-                if browser.poll() is not None:
-                    raise RuntimeError("Fixture Chrome exited before exposing CDP")
-                time.sleep(0.05)
-            port, browser_path = active.read_text().strip().splitlines()[:2]
+            port, browser_path = wait_for_browser(browser, profile, log_path)
             for key in list(os.environ):
                 if key.startswith(("BU_", "BH_", "BROWSER_HARNESS", "BROWSER_USE")):
                     del os.environ[key]
@@ -116,6 +141,7 @@ def main():
             except subprocess.TimeoutExpired:
                 browser.kill()
                 browser.wait()
+            browser_log.close()
             server.shutdown()
             server.server_close()
 

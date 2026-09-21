@@ -70,17 +70,23 @@ def checkpoint(browser, journal):
     journal.append("checkpoint", documentId=document_id, fingerprint=hashlib.sha256(live.encode()).hexdigest(), url=json.loads(live)["url"])
 
 def capture(browser, journal, action=None, text=None):
-    fields = journal.meta["task"].get("recovery", {}).get("fields", [])
+    task = journal.meta["task"]
+    fields = task.get("recovery", {}).get("fields", [])
+    # Capture also runs after a scoped/environment-backed step hands off to Jev.
+    # Protect aliases in the top-level document without reading secret values.
+    protected = [s["selector"] for s in [*task.get("steps", []), *task.get("recovery", {}).get("reconstruct", [])]
+                 if s.get("valueFromEnv") is not None and s.get("selector") and not s.get("frames")]
     for field in fields:
         if field.get("frames") or field.get("shadow") == "open":
             continue  # Jev cannot type into these; the scoped adapter captures them.
         result = browser.evaluate("""(x=>{
           const nodes=[...document.querySelectorAll(x.selector)];
           if(nodes.length!==1)return null; const e=nodes[0];
+          if(x.protected.some(selector=>e.matches(selector)))return {forbidden:true};
           if(e.matches('input[type=password],input[type=file],[autocomplete=one-time-code]'))return {forbidden:true};
           if(!('value' in e))return {forbidden:true};
           return {value:String(e.value),matches:x.node!=null&&window.__jevFast?.nodes.get(x.node)===e};
-        })(""" + json.dumps(dict(selector=field["selector"], node=action.get("node") if action else None)) + ")")
+        })(""" + json.dumps(dict(selector=field["selector"], protected=protected, node=action.get("node") if action else None)) + ")")
         if not result: continue
         if result.get("forbidden"): raise BridgeError("retention_forbidden", "A recovery field targets sensitive or unsupported input.")
         intended = action and action.get("kind") == "fill" and result.get("matches") and text is not None

@@ -16,7 +16,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bridge
 import jev_runner
-from browser_smoke import Handler, choose
+from browser_smoke import Handler, choose, wait_for_browser
 
 
 def main():
@@ -31,13 +31,11 @@ def main():
         flags = [chrome, "--headless=new", "--remote-debugging-port=0", f"--user-data-dir={profile}", "--no-first-run", "about:blank"]
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             flags.insert(1, "--no-sandbox")
-        browser = subprocess.Popen(flags, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log_path = root / "chrome.log"
+        browser_log = log_path.open("w")
+        browser = subprocess.Popen(flags, stdout=subprocess.DEVNULL, stderr=browser_log)
         try:
-            active = profile / "DevToolsActivePort"
-            for _ in range(200):
-                if active.exists(): break
-                time.sleep(.05)
-            port, browser_path = active.read_text().strip().splitlines()[:2]
+            port, browser_path = wait_for_browser(browser, profile, log_path)
             for key in list(os.environ):
                 if key.startswith(("BU_", "BH_", "BROWSER_HARNESS", "BROWSER_USE")):
                     del os.environ[key]
@@ -85,6 +83,21 @@ const s=JSON.parse(process.argv[1]); const c=await Cdp.open(s);try{console.log(J
             saved = next(e["data"] for e in reversed(events) if e["type"] == "checkpoint")
             assert observed["documentId"] == saved["documentId"], (observed, saved)
             assert observed["fingerprint"] == saved["fingerprint"], (observed, saved)
+            # Saved v0.2.0 tasks and selector aliases must not bypass capture protection.
+            secret = "managed-secret-sentinel"
+            page.evaluate("document.querySelector('#name').value=" + json.dumps(secret))
+            for location in ("steps", "reconstruct"):
+                protected_step = {"kind": "fill", "selector": "input", "valueFromEnv": "PRIVATE_INPUT"}
+                recovery = {"fields": [{"key": "name", "selector": "#name"}]}
+                extra = {"steps": [protected_step]} if location == "steps" else {}
+                if location == "reconstruct": recovery["reconstruct"] = [protected_step]
+                protected_journal, _ = make_run(recovery=recovery, **extra)
+                try: jev_runner.capture(page, protected_journal)
+                except bridge.BridgeError as error: assert error.code == "retention_forbidden", error.code
+                else: raise AssertionError("Environment-backed selector alias was captured")
+                assert not (protected_journal.directory / "recovery.json").exists()
+                assert secret not in protected_journal.file.read_text()
+            page.evaluate("document.querySelector('#name').value='CI value'")
             # Upstream retries StalePage, but the wrapper must never retry it after dispatch.
             second, req = make_run()
             original_act = Browser.act
@@ -106,7 +119,7 @@ const s=JSON.parse(process.argv[1]); const c=await Cdp.open(s);try{console.log(J
                 except bridge.BridgeError as error: assert error.code == "budget_exhausted", error.code
                 else: raise AssertionError("Call budget ignored")
             page.close()
-            print(json.dumps({"suite": "managed Jev", "paidModelCalls": 0, "checks": ["actual upstream loop", "same owned tab", "durable dispatch receipts", "allowlisted fields", "cross-language checkpoints", "no post-dispatch stale retry", "shared call budget"]}))
+            print(json.dumps({"suite": "managed Jev", "paidModelCalls": 0, "checks": ["actual upstream loop", "same owned tab", "durable dispatch receipts", "allowlisted fields", "cross-language checkpoints", "no post-dispatch stale retry", "shared call budget", "environment-backed capture aliases rejected"]}))
         finally:
             with contextlib.suppress(Exception):
                 from browser_harness.admin import restart_daemon
@@ -114,6 +127,7 @@ const s=JSON.parse(process.argv[1]); const c=await Cdp.open(s);try{console.log(J
             browser.terminate()
             try: browser.wait(timeout=5)
             except subprocess.TimeoutExpired: browser.kill(); browser.wait()
+            browser_log.close()
             server.shutdown(); server.server_close()
 
 
