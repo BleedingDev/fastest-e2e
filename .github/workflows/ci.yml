@@ -46,3 +46,6 @@ jobs:
       - name: Actual Midscene with controlled provider
         if: always() && !cancelled()
         run: timeout 90s node test/vision.smoke.mjs
+      - name: Review regressions for retention and preflight
+        if: always() && !cancelled()
+        run: timeout 90s node test/review-followups.smoke.mjs

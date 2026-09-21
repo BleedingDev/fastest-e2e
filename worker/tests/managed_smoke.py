@@ -80,6 +80,21 @@ const s=JSON.parse(process.argv[1]); const c=await Cdp.open(s);try{console.log(J
                     saved = next(e["data"] for e in reversed(events) if e["type"] == "checkpoint")
                     assert observed["documentId"] == saved["documentId"], (observed, saved)
                     assert observed["fingerprint"] == saved["fingerprint"], (observed, saved)
+                    # Saved v0.2.0 tasks and selector aliases must not bypass capture protection.
+                    secret = "managed-secret-sentinel"
+                    page.evaluate("document.querySelector('#name').value=" + json.dumps(secret))
+                    for location in ("steps", "reconstruct"):
+                        protected_step = {"kind": "fill", "selector": "input", "valueFromEnv": "PRIVATE_INPUT"}
+                        recovery = {"fields": [{"key": "name", "selector": "#name"}]}
+                        extra = {"steps": [protected_step]} if location == "steps" else {}
+                        if location == "reconstruct": recovery["reconstruct"] = [protected_step]
+                        protected_journal, _ = make_run(recovery=recovery, **extra)
+                        try: jev_runner.capture(page, protected_journal)
+                        except bridge.BridgeError as error: assert error.code == "retention_forbidden", error.code
+                        else: raise AssertionError("Environment-backed selector alias was captured")
+                        assert not (protected_journal.directory / "recovery.json").exists()
+                        assert secret not in protected_journal.file.read_text()
+                    page.evaluate("document.querySelector('#name').value='CI value'")
                     # Upstream retries StalePage, but the wrapper must never retry it after dispatch.
                     second, req = make_run()
                     original_act = Browser.act
@@ -101,7 +116,7 @@ const s=JSON.parse(process.argv[1]); const c=await Cdp.open(s);try{console.log(J
                         except bridge.BridgeError as error: assert error.code == "budget_exhausted", error.code
                         else: raise AssertionError("Call budget ignored")
                     page.close()
-                    print(json.dumps({"suite": "managed Jev", "paidModelCalls": 0, "checks": ["actual upstream loop", "same owned tab", "durable dispatch receipts", "allowlisted fields", "cross-language checkpoints", "no post-dispatch stale retry", "shared call budget"]}))
+                    print(json.dumps({"suite": "managed Jev", "paidModelCalls": 0, "checks": ["actual upstream loop", "same owned tab", "durable dispatch receipts", "allowlisted fields", "cross-language checkpoints", "no post-dispatch stale retry", "shared call budget", "environment-backed capture aliases rejected"]}))
                 finally:
                     with contextlib.suppress(Exception):
                         from browser_harness.admin import restart_daemon

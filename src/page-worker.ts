@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
-import type { Browser, Page, Locator, FrameLocator } from "playwright-core";
+import type { Browser, Page, Locator, FrameLocator, ElementHandle, Frame } from "playwright-core";
 import { BrowserError, type Check } from "./contracts.js";
 import { Journal, remaining, digest, atomic, type Data } from "./journal.js";
 import { Cdp, checkpoint, liveStateExpression } from "./cdp.js";
@@ -75,7 +75,38 @@ export async function pollChecks(page: Page, checks: readonly Check[], timeoutMs
     await new Promise(resolve => setTimeout(resolve, 100));
   }
 }
+async function assertRecoveryTargets(page: Page, journal: Journal): Promise<void> {
+  const task = journal.meta().task;
+  const fields = task.recovery?.fields ?? [];
+  const protectedSteps = [...(task.steps ?? []), ...(task.recovery?.reconstruct ?? [])]
+    .filter(s => s.valueFromEnv !== undefined && s.selector !== undefined);
+  if (!fields.length || !protectedSteps.length) return;
+  const handles: ElementHandle[] = [];
+  try {
+    const protectedNodes: { node: ElementHandle; frame: Frame | null }[] = [];
+    for (const step of protectedSteps) {
+      const { locator } = await scoped(page, step);
+      const nodes = await locator.elementHandles();
+      handles.push(...nodes);
+      for (const node of nodes) protectedNodes.push({ node, frame: await node.ownerFrame() });
+    }
+    for (const field of fields) {
+      const { locator } = await scoped(page, field);
+      const nodes = await locator.elementHandles(); handles.push(...nodes);
+      for (const node of nodes) {
+        // Different CSS/frame paths can resolve to the same control. Compare
+        // DOM identity, without reading either value or persisting a handle.
+        const frame = await node.ownerFrame();
+        const candidates = protectedNodes.filter(p => p.frame === frame).map(p => p.node);
+        if (candidates.length && await node.evaluate((element, others) => others.includes(element), candidates)) {
+          throw new BrowserError({ code: "retention_forbidden", reason: "An environment-backed control overlaps the recovery allowlist. Remove it and use its environment reference for reconstruction." });
+        }
+      }
+    }
+  } finally { await Promise.allSettled(handles.map(handle => handle.dispose())); }
+}
 async function captureFields(page: Page, journal: Journal): Promise<void> {
+  await assertRecoveryTargets(page, journal);
   for (const f of journal.meta().task.recovery?.fields ?? []) {
     const { locator } = await scoped(page, f);
     if (await locator.count() !== 1) continue;
@@ -116,6 +147,7 @@ async function runSteps(page: Page, journal: Journal, job: PageJob, snap: () => 
       throw new BrowserError({ code: "ambiguous_target", reason: "Action requires one matching control. Inspect the scoped page; no action was dispatched." });
     }
     if (!rebuilding) await captureFields(page, journal);
+    else if (s.valueFromEnv) await assertRecoveryTargets(page, journal);
     if (s.kind === "fill") for (const f of journal.meta().task.recovery?.fields ?? []) {
       if (f.selector === s.selector && JSON.stringify(f.frames) === JSON.stringify(s.frames) && f.shadow === s.shadow && !s.valueFromEnv) {
         const result = await locator.evaluate(readElement, { kind: "value" });
