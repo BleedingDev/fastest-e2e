@@ -2,7 +2,7 @@ name: Validate review fixes
 on:
   push:
     branches: [fix/pr-2-review-followups]
-    paths: [.github/workflows/review-fixture.yml, .github/review-source.patch]
+    paths: [.github/workflows/review-fixture.yml, .github/review-source.patch, test/**]
 permissions:
   contents: read
 jobs:

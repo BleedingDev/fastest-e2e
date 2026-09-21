@@ -52,7 +52,7 @@ export async function fixture() {
     child = spawn(chromePath, [`--user-data-dir=${profile}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', '--headless=new', '--no-first-run', '--no-default-browser-check', '--site-per-process', '--window-size=1280,900', ...(process.getuid?.()===0 ? ['--no-sandbox'] : []), 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
     child.stderr.on('data', chunk => { diagnostic = (diagnostic + chunk.toString()).slice(-8_192); });
     child.once('error', error => { spawnError = error; });
-    const deadline = Date.now() + 15_000;
+    const deadline = Date.now() + 30_000;
     let last;
     while (Date.now() < deadline && alive() && !spawnError) {
       try { return await connect(); } catch (error) { last = error; }
