@@ -75,12 +75,11 @@ export async function pollChecks(page: Page, checks: readonly Check[], timeoutMs
     await new Promise(resolve => setTimeout(resolve, 100));
   }
 }
-async function assertRecoveryTargets(page: Page, journal: Journal): Promise<void> {
+async function captureFields(page: Page, journal: Journal): Promise<void> {
   const task = journal.meta().task;
   const fields = task.recovery?.fields ?? [];
   const protectedSteps = [...(task.steps ?? []), ...(task.recovery?.reconstruct ?? [])]
     .filter(s => s.valueFromEnv !== undefined && s.selector !== undefined);
-  if (!fields.length || !protectedSteps.length) return;
   const handles: ElementHandle[] = [];
   try {
     const protectedNodes: { node: ElementHandle; frame: Frame | null }[] = [];
@@ -90,31 +89,36 @@ async function assertRecoveryTargets(page: Page, journal: Journal): Promise<void
       handles.push(...nodes);
       for (const node of nodes) protectedNodes.push({ node, frame: await node.ownerFrame() });
     }
-    for (const field of fields) {
-      const { locator } = await scoped(page, field);
-      const nodes = await locator.elementHandles(); handles.push(...nodes);
-      for (const node of nodes) {
-        // Different CSS/frame paths can resolve to the same control. Compare
-        // DOM identity, without reading either value or persisting a handle.
-        const frame = await node.ownerFrame();
-        const candidates = protectedNodes.filter(p => p.frame === frame).map(p => p.node);
-        if (candidates.length && await node.evaluate((element, others) => others.includes(element), candidates)) {
-          throw new BrowserError({ code: "retention_forbidden", reason: "An environment-backed control overlaps the recovery allowlist. Remove it and use its environment reference for reconstruction." });
-        }
+    for (const f of fields) {
+      const { locator } = await scoped(page, f);
+      const nodes = await locator.elementHandles();
+      handles.push(...nodes);
+      if (nodes.length !== 1) continue;
+      const node = nodes[0]!;
+      const frame = await node.ownerFrame();
+      const candidates = protectedNodes.filter(p => p.frame === frame).map(p => p.node);
+      // Pin the recovery target to one DOM node, then compare identity and read
+      // its value in the same page evaluation. A rerender cannot swap the
+      // recovery selector to an environment-backed control between the guard
+      // and the read.
+      const result = await node.evaluate((element, others) => {
+        if (others.includes(element)) return { actual: "", protected: true };
+        const sensitive = element.matches('input[type=password], input[type=file], [autocomplete="one-time-code"]');
+        const rect = element.getBoundingClientRect();
+        const visible = !!rect.width && !!rect.height && element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+        if (!visible) return { actual: "", available: false };
+        if (sensitive) return { actual: "", error: "Sensitive control values cannot be collected." };
+        if (!("value" in element)) return { actual: "", error: "Target is not a value control." };
+        return { actual: String((element as HTMLInputElement).value) };
+      }, candidates);
+      if (result.protected) {
+        throw new BrowserError({ code: "retention_forbidden", reason: "An environment-backed control overlaps the recovery allowlist. Remove it and use its environment reference for reconstruction." });
       }
+      if (result.error) throw new BrowserError({ code: "retention_forbidden", reason: "A recovery allowlist includes a sensitive or unsupported control. Remove it; no value was saved." });
+      if (result.available === false) continue;
+      journal.saveField(f.key, result.actual, "observed");
     }
   } finally { await Promise.allSettled(handles.map(handle => handle.dispose())); }
-}
-async function captureFields(page: Page, journal: Journal): Promise<void> {
-  await assertRecoveryTargets(page, journal);
-  for (const f of journal.meta().task.recovery?.fields ?? []) {
-    const { locator } = await scoped(page, f);
-    if (await locator.count() !== 1) continue;
-    const result = await locator.evaluate(readElement, { kind: "value" });
-    if (result.error) throw new BrowserError({ code: "retention_forbidden", reason: "A recovery allowlist includes a sensitive or unsupported control. Remove it; no value was saved." });
-    if (result.available === false) continue;
-    journal.saveField(f.key, result.actual, "observed");
-  }
 }
 function valueFor(s: Step, journal: Journal, retained = journal.recoveryFields()): string {
   if (s.valueFromInput) {
