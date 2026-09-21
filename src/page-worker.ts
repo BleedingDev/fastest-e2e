@@ -104,7 +104,7 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
 
       if (!save) {
         for (const protectedLocator of current) {
-          const overlaps = await protectedLocator.evaluateAll((elements, target) => elements.includes(target), node);
+          const overlaps = await protectedLocator.evaluateAll((elements, target) => elements.includes(target as HTMLElement | SVGElement), node);
           if (overlaps) {
             throw new BrowserError({ code: "retention_forbidden", reason: "An environment-backed control overlaps the recovery allowlist. Remove it and use its environment reference for reconstruction." });
           }
@@ -122,7 +122,7 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
             const element = input.target as unknown as Element;
             const hasValue = "value" in element;
             const rawValue = hasValue ? String((element as HTMLInputElement).value) : "";
-            if (elements.includes(element) || input.values.includes(rawValue)) return { actual: "", protected: true };
+            if (elements.includes(element as HTMLElement | SVGElement) || input.values.includes(rawValue)) return { actual: "", protected: true };
             const sensitive = element.matches('input[type=password], input[type=file], [autocomplete="one-time-code"]');
             const rect = element.getBoundingClientRect();
             const visible = !!rect.width && !!rect.height && element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
