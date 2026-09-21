@@ -117,18 +117,6 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
       // and read that same node in the very same browser evaluation.
       let protectedLocator = current[0];
       for (const next of current.slice(1)) protectedLocator = protectedLocator!.or(next);
-      const inspect = (element: Element, values: string[], protectedBySelector: boolean) => {
-        const hasValue = "value" in element;
-        const rawValue = hasValue ? String((element as HTMLInputElement).value) : "";
-        if (protectedBySelector || values.includes(rawValue)) return { actual: "", protected: true };
-        const sensitive = element.matches('input[type=password], input[type=file], [autocomplete="one-time-code"]');
-        const rect = element.getBoundingClientRect();
-        const visible = !!rect.width && !!rect.height && element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
-        if (!visible) return { actual: "", available: false };
-        if (sensitive) return { actual: "", error: "Sensitive control values cannot be collected." };
-        if (!hasValue) return { actual: "", error: "Target is not a value control." };
-        return { actual: rawValue };
-      };
       const result = protectedLocator
         ? await protectedLocator.evaluateAll((elements, input) => {
             const element = input.target as unknown as Element;
@@ -156,7 +144,6 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
             if (!hasValue) return { actual: "", error: "Target is not a value control." };
             return { actual: rawValue };
           }, protectedValues);
-      void inspect;
       if (result.protected) {
         throw new BrowserError({ code: "retention_forbidden", reason: "An environment-backed control overlaps the recovery allowlist. Remove it and use its environment reference for reconstruction." });
       }
