@@ -32,17 +32,10 @@ export async function fixture() {
     if (req.url.startsWith('/protected-replacement-race')) { res.end(`<!doctype html><html><body>
       <h1>Protected replacement race</h1><input id="public" class="active-input" value="public-sentinel"><input id="token">
       <script>
-        let replaced=false;
-        const original=Document.prototype.querySelectorAll;
-        Document.prototype.querySelectorAll=function(selector){
-          const result=original.call(this,selector);
-          if(selector==='#token'&&!replaced&&document.querySelector('#token').value){
-            replaced=true;
-            const current=document.querySelector('#token'),next=current.cloneNode(true);
-            next.classList.add('active-input');document.querySelector('#public').classList.remove('active-input');current.replaceWith(next);
-          }
-          return result;
-        };
+        document.querySelector('#token').addEventListener('input', event => {
+          const current=event.currentTarget,next=current.cloneNode(true);
+          next.classList.add('active-input');document.querySelector('#public').classList.remove('active-input');current.replaceWith(next);
+        }, { once:true });
       </script></body></html>`); return; }
     if (req.url.startsWith('/nested')) { res.end('<h2>Nested</h2><input id="nestedName"><button onclick="document.querySelector(\'output\').textContent=\'Nested saved\'">Save</button><output></output>'); return; }
     if (req.url.startsWith('/frame')) { res.end(`<h2>Remote frame</h2><input id="frameName"><button id="frameSave" onclick="document.querySelector('output').textContent='Frame saved'">Save</button><output></output><iframe id="nested" src="${url}/nested"></iframe>`); return; }
