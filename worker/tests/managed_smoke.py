@@ -80,20 +80,47 @@ const s=JSON.parse(process.argv[1]); const c=await Cdp.open(s);try{console.log(J
                     saved = next(e["data"] for e in reversed(events) if e["type"] == "checkpoint")
                     assert observed["documentId"] == saved["documentId"], (observed, saved)
                     assert observed["fingerprint"] == saved["fingerprint"], (observed, saved)
-                    # Saved v0.2.0 tasks and selector aliases must not bypass capture protection.
+                    # Prefilled saved runs must protect document-scoped aliases before reading values.
                     secret = "managed-secret-sentinel"
                     page.evaluate("document.querySelector('#name').value=" + json.dumps(secret))
+                    page.evaluate("""(() => {
+                        const decoy = document.createElement('input');
+                        decoy.id = 'decoy'; decoy.value = 'Public value';
+                        const control = document.querySelector('#name');
+                        control.before(decoy);
+                        window.__protectedValueReads = 0;
+                        const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+                        Object.defineProperty(control, 'value', {configurable: true,
+                            get() { window.__protectedValueReads++; return descriptor.get.call(this); },
+                            set(value) { descriptor.set.call(this, value); }
+                        });
+                    })()""")
+                    # :scope input matches the decoy first; all results must be checked by identity.
                     for location in ("steps", "reconstruct"):
-                        protected_step = {"kind": "fill", "selector": "input", "valueFromEnv": "PRIVATE_INPUT"}
-                        recovery = {"fields": [{"key": "name", "selector": "#name"}]}
-                        extra = {"steps": [protected_step]} if location == "steps" else {}
-                        if location == "reconstruct": recovery["reconstruct"] = [protected_step]
-                        protected_journal, _ = make_run(recovery=recovery, **extra)
-                        try: jev_runner.capture(page, protected_journal)
-                        except bridge.BridgeError as error: assert error.code == "retention_forbidden", error.code
-                        else: raise AssertionError("Environment-backed selector alias was captured")
-                        assert not (protected_journal.directory / "recovery.json").exists()
-                        assert secret not in protected_journal.file.read_text()
+                        for selector in ("input", ":scope #name", ":scope > body > #name",
+                                         "#missing, :scope #name", ":scope input"):
+                            protected_step = {"kind": "fill", "selector": selector, "valueFromEnv": "PRIVATE_INPUT"}
+                            recovery = {"fields": [{"key": "name", "selector": "#name"}]}
+                            extra = {"steps": [protected_step]} if location == "steps" else {}
+                            if location == "reconstruct": recovery["reconstruct"] = [protected_step]
+                            protected_journal, _ = make_run(recovery=recovery, **extra)
+                            try: jev_runner.capture(page, protected_journal)
+                            except bridge.BridgeError as error: assert error.code == "retention_forbidden", error.code
+                            else: raise AssertionError(f"Environment-backed alias was captured: {location}, {selector}")
+                            assert not (protected_journal.directory / "recovery.json").exists()
+                            assert secret not in protected_journal.file.read_text()
+                            assert page.evaluate("window.__protectedValueReads") == 0
+                    # Protecting another control must not disable ordinary recovery capture.
+                    unrelated, _ = make_run(
+                        steps=[{"kind": "fill", "selector": ":scope #name", "valueFromEnv": "PRIVATE_INPUT"}],
+                        recovery={"fields": [{"key": "public", "selector": "#decoy"}]},
+                    )
+                    jev_runner.capture(page, unrelated)
+                    recovered = json.loads((unrelated.directory / "recovery.json").read_text())
+                    assert recovered["public"]["value"] == "Public value"
+                    assert secret not in (unrelated.directory / "recovery.json").read_text()
+                    assert page.evaluate("window.__protectedValueReads") == 0
+                    page.evaluate("delete document.querySelector('#name').value; document.querySelector('#decoy').remove()")
                     page.evaluate("document.querySelector('#name').value='CI value'")
                     # Upstream retries StalePage, but the wrapper must never retry it after dispatch.
                     second, req = make_run()
@@ -116,7 +143,7 @@ const s=JSON.parse(process.argv[1]); const c=await Cdp.open(s);try{console.log(J
                         except bridge.BridgeError as error: assert error.code == "budget_exhausted", error.code
                         else: raise AssertionError("Call budget ignored")
                     page.close()
-                    print(json.dumps({"suite": "managed Jev", "paidModelCalls": 0, "checks": ["actual upstream loop", "same owned tab", "durable dispatch receipts", "allowlisted fields", "cross-language checkpoints", "no post-dispatch stale retry", "shared call budget", "environment-backed capture aliases rejected"]}))
+                    print(json.dumps({"suite": "managed Jev", "paidModelCalls": 0, "checks": ["actual upstream loop", "same owned tab", "durable dispatch receipts", "allowlisted fields", "cross-language checkpoints", "no post-dispatch stale retry", "shared call budget", "document-scoped protected aliases rejected before value reads", "unrelated recovery remains usable"]}))
                 finally:
                     with contextlib.suppress(Exception):
                         from browser_harness.admin import restart_daemon

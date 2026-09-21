@@ -82,7 +82,8 @@ def capture(browser, journal, action=None, text=None):
         result = browser.evaluate("""(x=>{
           const nodes=[...document.querySelectorAll(x.selector)];
           if(nodes.length!==1)return null; const e=nodes[0];
-          if(x.protected.some(selector=>e.matches(selector)))return {forbidden:true};
+          // Keep document scope: Element.matches() would rebind :scope to e.
+          if(x.protected.some(selector=>[...document.querySelectorAll(selector)].includes(e)))return {forbidden:true};
           if(e.matches('input[type=password],input[type=file],[autocomplete=one-time-code]'))return {forbidden:true};
           if(!('value' in e))return {forbidden:true};
           return {value:String(e.value),matches:x.node!=null&&window.__jevFast?.nodes.get(x.node)===e};
