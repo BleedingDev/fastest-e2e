@@ -46,6 +46,20 @@ try {
   await Effect.runPromise(closeRun(raced.runId));
   passed.push('recovery target identity is pinned atomically with its value read');
 
+  const replaced = await execute({ name: 'Protected target replacement cannot leak recovery', url: f.url + '/protected-replacement-race', goal: 'Fill an environment-backed field', keepTab: true,
+    steps: [{ kind: 'fill', selector: '#token', valueFromEnv: key }],
+    checks: [{ kind: 'text', selector: 'h1', value: 'Protected replacement race' }],
+    recovery: { fields: [{ key: 'active', selector: '.active-input' }] },
+  });
+  assert.equal(replaced.status, 'blocked', JSON.stringify(replaced));
+  assert.equal(replaced.execution.reasonCode, 'retention_forbidden');
+  const replacedJournal = new Journal(f.directory, replaced.runId);
+  assert.notEqual(replacedJournal.recoveryFields().active?.value, secret);
+  const replacedFiles = fs.readdirSync(replacedJournal.dir, { recursive: true }).filter(file => fs.statSync(path.join(replacedJournal.dir, file)).isFile());
+  for (const file of replacedFiles) assert.equal(fs.readFileSync(path.join(replacedJournal.dir, file), 'utf8').includes(secret), false, file);
+  await Effect.runPromise(closeRun(replaced.runId));
+  passed.push('replaced protected nodes cannot leak their environment-backed value');
+
   const unrelated = await execute({ name: 'Independent recovery stays usable', url: f.url, goal: 'Fill independent controls', keepTab: true,
     steps: [{ kind: 'fill', selector: '#other', valueFromEnv: key }, { kind: 'fill', selector: '#name', value: 'Recoverable' }],
     checks: [{ kind: 'value', selector: '#name', value: 'Recoverable' }],
