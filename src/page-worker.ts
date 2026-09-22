@@ -75,36 +75,61 @@ export async function pollChecks(page: Page, checks: readonly Check[], timeoutMs
     await new Promise(resolve => setTimeout(resolve, 100));
   }
 }
+// Recovery is a passive snapshot: a later step's frame may not exist yet.
+// Pin each existing frame without waiting or relaxing required action/check scopes.
+async function captureScope(page: Page, s: Scoped): Promise<{ frame: Frame; locator: Locator } | undefined> {
+  if (s.shadow === "closed") throw new BrowserError({ code: "unsupported_scope", reason: "Closed shadow-root DOM access is unsupported. Use explicitly requested visual evidence." });
+  let frame = page.mainFrame();
+  for (const selector of s.frames ?? []) {
+    const nodes = await frame.locator(css(selector, s.shadow)).elementHandles();
+    try {
+      if (nodes.length === 0) return undefined;
+      if (nodes.length !== 1 || !(await nodes[0]!.evaluate(e => /^(IFRAME|FRAME)$/.test(e.tagName)))) {
+        throw new BrowserError({ code: "unsupported_scope", reason: "The frame path did not identify exactly one frame. Recovery capture cannot establish its scope." });
+      }
+      const child = await nodes[0]!.contentFrame();
+      if (!child) return undefined;
+      frame = child;
+    } finally { await Promise.allSettled(nodes.map(node => node.dispose())); }
+  }
+  return { frame, locator: frame.locator(css(s.selector ?? "body", s.shadow)) };
+}
 async function captureFields(page: Page, journal: Journal, save = true): Promise<void> {
   const task = journal.meta().task;
   const fields = task.recovery?.fields ?? [];
+  if (fields.length === 0) return;
   const protectedSteps = [...(task.steps ?? []), ...(task.recovery?.reconstruct ?? [])]
     .filter(s => s.valueFromEnv !== undefined && s.selector !== undefined);
+  // These values never enter browser evaluation arguments. A page may redefine
+  // its prototypes; equality against environment secrets belongs in this process.
+  const protectedValues = new Set(protectedSteps
+    .map(step => process.env[step.valueFromEnv!])
+    .filter((value): value is string => value !== undefined && value.length > 0));
   const handles: ElementHandle[] = [];
   try {
-    const protectedTargets: { locator: Locator; frame: Frame | null }[] = [];
-    for (const step of protectedSteps) {
-      const { root, locator } = await scoped(page, step);
-      const documentElement = await root.locator("html").elementHandle();
-      if (!documentElement) continue;
-      handles.push(documentElement);
-      protectedTargets.push({ locator, frame: await documentElement.ownerFrame() });
-    }
-    const protectedValues = protectedSteps
-      .map(step => process.env[step.valueFromEnv!])
-      .filter((value): value is string => value !== undefined && value.length > 0);
     for (const f of fields) {
-      const { locator } = await scoped(page, f);
-      const nodes = await locator.elementHandles();
+      const scope = await captureScope(page, f);
+      if (!scope) continue;
+      const nodes = await scope.locator.elementHandles();
       handles.push(...nodes);
       if (nodes.length !== 1) continue;
       const node = nodes[0]!;
       const frame = await node.ownerFrame();
-      const current = protectedTargets.filter(p => p.frame === frame).map(p => p.locator);
+      if (!frame) continue;
+      const current: Locator[] = [];
+      // Resolve protection after pinning the candidate. Missing future frames
+      // are skipped, but malformed or ambiguous scopes still fail closed.
+      for (const step of protectedSteps) {
+        const protectedScope = await captureScope(page, step);
+        if (protectedScope?.frame === frame) current.push(protectedScope.locator);
+      }
 
       if (!save) {
         for (const protectedLocator of current) {
-          const overlaps = await protectedLocator.evaluateAll((elements, target) => elements.includes(target as HTMLElement | SVGElement), node);
+          const overlaps = await protectedLocator.evaluateAll((elements, target) => {
+            for (let i = 0; i < elements.length; i++) if (elements[i] === target) return true;
+            return false;
+          }, node);
           if (overlaps) {
             throw new BrowserError({ code: "retention_forbidden", reason: "An environment-backed control overlaps the recovery allowlist. Remove it and use its environment reference for reconstruction." });
           }
@@ -112,39 +137,26 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
         continue;
       }
 
-      // Resolve every protected selector with Playwright's current, shadow-aware
-      // locator semantics, compare against the already-pinned recovery node,
-      // and read that same node in the very same browser evaluation.
+      // Resolve protected selectors with Playwright's shadow-aware semantics,
+      // reject identity/sensitivity, then read that exact pinned node atomically.
       let protectedLocator = current[0];
       for (const next of current.slice(1)) protectedLocator = protectedLocator!.or(next);
-      const result = protectedLocator
-        ? await protectedLocator.evaluateAll((elements, input) => {
-            const element = input.target as unknown as Element;
-            const hasValue = "value" in element;
-            const rawValue = hasValue ? String((element as HTMLInputElement).value) : "";
-            if (elements.includes(element as HTMLElement | SVGElement) || input.values.includes(rawValue)) return { actual: "", protected: true };
+      const result: { actual: string; protected?: boolean; error?: string; available?: boolean } = protectedLocator
+        ? await protectedLocator.evaluateAll((elements, target) => {
+            const element = target as unknown as Element;
+            for (let i = 0; i < elements.length; i++) if (elements[i] === element) return { actual: "", protected: true };
+            // A page-controlled value getter can change these attributes. Check
+            // them before any value access, including environment comparisons.
             const sensitive = element.matches('input[type=password], input[type=file], [autocomplete="one-time-code"]');
+            if (sensitive) return { actual: "", error: "Sensitive control values cannot be collected." };
+            if (!("value" in element)) return { actual: "", error: "Target is not a value control." };
             const rect = element.getBoundingClientRect();
             const visible = !!rect.width && !!rect.height && element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
             if (!visible) return { actual: "", available: false };
-            if (sensitive) return { actual: "", error: "Sensitive control values cannot be collected." };
-            if (!hasValue) return { actual: "", error: "Target is not a value control." };
-            return { actual: rawValue };
-          }, { target: node, values: protectedValues })
-        : await node.evaluate((element, values) => {
-            const hasValue = "value" in element;
-            const rawValue = hasValue ? String((element as HTMLInputElement).value) : "";
-            if (values.includes(rawValue)) return { actual: "", protected: true };
-            const control = element as Element;
-            const sensitive = control.matches('input[type=password], input[type=file], [autocomplete="one-time-code"]');
-            const rect = control.getBoundingClientRect();
-            const visible = !!rect.width && !!rect.height && control.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
-            if (!visible) return { actual: "", available: false };
-            if (sensitive) return { actual: "", error: "Sensitive control values cannot be collected." };
-            if (!hasValue) return { actual: "", error: "Target is not a value control." };
-            return { actual: rawValue };
-          }, protectedValues);
-      if (result.protected) {
+            return { actual: String((element as HTMLInputElement).value) };
+          }, node)
+        : await node.evaluate(readElement, { kind: "value" });
+      if (result.protected || protectedValues.has(result.actual)) {
         throw new BrowserError({ code: "retention_forbidden", reason: "An environment-backed control overlaps the recovery allowlist. Remove it and use its environment reference for reconstruction." });
       }
       if (result.error) throw new BrowserError({ code: "retention_forbidden", reason: "A recovery allowlist includes a sensitive or unsupported control. Remove it; no value was saved." });
