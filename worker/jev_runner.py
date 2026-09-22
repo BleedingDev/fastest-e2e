@@ -72,9 +72,23 @@ def checkpoint(browser, journal):
 def capture(browser, journal, action=None, text=None):
     task = journal.meta["task"]
     fields = task.get("recovery", {}).get("fields", [])
+    if not fields:
+        return
+    steps = [*task.get("steps", []), *task.get("recovery", {}).get("reconstruct", [])]
+    events = journal.events()
+    # A scoped secret fill can hand off to Jev after the page has formatted or
+    # moved its value. Never infer that it became public from current selectors.
+    if any(e["type"] == "recovery.capture_suspended" for e in events):
+        return
+    if any(s.get("valueFromEnv") is not None for s in steps) and any(
+        e["type"] == "action.start" and e["data"].get("engine") == "playwright"
+        and e["data"].get("recoveryGuarded") is not True for e in events
+    ):
+        journal.append("recovery.capture_suspended", reason="Legacy dispatch cannot establish the environment-input boundary. Keep existing recovery inputs; do not collect new page values.")
+        return
     # Capture also runs after a scoped/environment-backed step hands off to Jev.
     # Protect aliases in the top-level document without reading secret values.
-    protected = [s["selector"] for s in [*task.get("steps", []), *task.get("recovery", {}).get("reconstruct", [])]
+    protected = [s["selector"] for s in steps
                  if s.get("valueFromEnv") is not None and s.get("selector") and not s.get("frames")]
     for field in fields:
         if field.get("frames") or field.get("shadow") == "open":
