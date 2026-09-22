@@ -75,6 +75,8 @@ export function validateTask(task: Task, testing: boolean): void {
     if (x.schema && JSON.stringify(x.schema).length > 20_000) invalid("Extraction schema too large.");
   }
   if (task.inputs && (Object.keys(task.inputs).length > 30 || Object.values(task.inputs).some(v => v.length > 20_000))) invalid("Inputs exceed their storage budget.");
+  const targetKey = (s: { selector?: string | undefined; frames?: readonly string[] | undefined; shadow?: string | undefined }) =>
+    JSON.stringify([s.selector?.trim(), (s.frames ?? []).map(f => f.trim()), s.shadow ?? "none"]);
   const fieldKeys = new Set<string>();
   for (const f of task.recovery?.fields ?? []) {
     scope(f);
@@ -99,6 +101,9 @@ export function validateTask(task: Task, testing: boolean): void {
       if (["navigate", "fill", "press", "select", "check", "scroll"].includes(s.kind) && values.length !== 1) invalid(`${s.kind} requires exactly one value source.`);
       if (s.valueFromInput && (!/^[a-zA-Z][\w-]{0,63}$/.test(s.valueFromInput) || task.inputs?.[s.valueFromInput] === undefined)) invalid("A named step input is missing.");
       if (s.valueFromEnv && !/^[A-Z_][A-Z_0-9]{0,127}$/.test(s.valueFromEnv)) invalid("Invalid environment reference.");
+      if (s.valueFromEnv && s.selector && task.recovery?.fields?.some(f => targetKey(f) === targetKey(s))) {
+        invalid("An environment-backed control cannot be a recovery field. Remove it from recovery.fields; use its environment reference for reconstruction.");
+      }
       if (s.valueFromRecovery && !fieldKeys.has(s.valueFromRecovery)) invalid("Recovery key is not allowlisted.");
       if (s.kind === "goal" && !s.goal?.trim()) invalid("goal step requires a goal.");
       if (s.kind === "checkpoint" && !s.checks?.length) invalid("checkpoint requires assertions.");

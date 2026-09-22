@@ -70,17 +70,38 @@ def checkpoint(browser, journal):
     journal.append("checkpoint", documentId=document_id, fingerprint=hashlib.sha256(live.encode()).hexdigest(), url=json.loads(live)["url"])
 
 def capture(browser, journal, action=None, text=None):
-    fields = journal.meta["task"].get("recovery", {}).get("fields", [])
+    task = journal.meta["task"]
+    fields = task.get("recovery", {}).get("fields", [])
+    if not fields:
+        return
+    steps = [*task.get("steps", []), *task.get("recovery", {}).get("reconstruct", [])]
+    events = journal.events()
+    # A scoped secret fill can hand off to Jev after the page has formatted or
+    # moved its value. Never infer that it became public from current selectors.
+    if any(e["type"] == "recovery.capture_suspended" for e in events):
+        return
+    if any(s.get("valueFromEnv") is not None for s in steps) and any(
+        e["type"] == "action.start" and e["data"].get("engine") == "playwright"
+        and e["data"].get("recoveryGuarded") is not True for e in events
+    ):
+        journal.append("recovery.capture_suspended", reason="Legacy dispatch cannot establish the environment-input boundary. Keep existing recovery inputs; do not collect new page values.")
+        return
+    # Capture also runs after a scoped/environment-backed step hands off to Jev.
+    # Protect aliases in the top-level document without reading secret values.
+    protected = [s["selector"] for s in steps
+                 if s.get("valueFromEnv") is not None and s.get("selector") and not s.get("frames")]
     for field in fields:
         if field.get("frames") or field.get("shadow") == "open":
             continue  # Jev cannot type into these; the scoped adapter captures them.
         result = browser.evaluate("""(x=>{
           const nodes=[...document.querySelectorAll(x.selector)];
           if(nodes.length!==1)return null; const e=nodes[0];
+          // Keep document scope: Element.matches() would rebind :scope to e.
+          if(x.protected.some(selector=>[...document.querySelectorAll(selector)].includes(e)))return {forbidden:true};
           if(e.matches('input[type=password],input[type=file],[autocomplete=one-time-code]'))return {forbidden:true};
           if(!('value' in e))return {forbidden:true};
           return {value:String(e.value),matches:x.node!=null&&window.__jevFast?.nodes.get(x.node)===e};
-        })(""" + json.dumps(dict(selector=field["selector"], node=action.get("node") if action else None)) + ")")
+        })(""" + json.dumps(dict(selector=field["selector"], protected=protected, node=action.get("node") if action else None)) + ")")
         if not result: continue
         if result.get("forbidden"): raise BridgeError("retention_forbidden", "A recovery field targets sensitive or unsupported input.")
         intended = action and action.get("kind") == "fill" and result.get("matches") and text is not None

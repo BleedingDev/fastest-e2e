@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
-import type { Browser, Page, Locator, FrameLocator } from "playwright-core";
+import type { Browser, Page, Locator, FrameLocator, ElementHandle, Frame } from "playwright-core";
 import { BrowserError, type Check } from "./contracts.js";
 import { Journal, remaining, digest, atomic, type Data } from "./journal.js";
 import { Cdp, checkpoint, liveStateExpression } from "./cdp.js";
@@ -75,15 +75,124 @@ export async function pollChecks(page: Page, checks: readonly Check[], timeoutMs
     await new Promise(resolve => setTimeout(resolve, 100));
   }
 }
-async function captureFields(page: Page, journal: Journal): Promise<void> {
-  for (const f of journal.meta().task.recovery?.fields ?? []) {
-    const { locator } = await scoped(page, f);
-    if (await locator.count() !== 1) continue;
-    const result = await locator.evaluate(readElement, { kind: "value" });
-    if (result.error) throw new BrowserError({ code: "retention_forbidden", reason: "A recovery allowlist includes a sensitive or unsupported control. Remove it; no value was saved." });
-    if (result.available === false) continue;
-    journal.saveField(f.key, result.actual, "observed");
+// Recovery is a passive snapshot: a later step's frame may not exist yet.
+// Pin each existing frame without waiting or relaxing required action/check scopes.
+async function captureScope(page: Page, s: Scoped): Promise<{ frame: Frame; locator: Locator } | undefined> {
+  if (s.shadow === "closed") throw new BrowserError({ code: "unsupported_scope", reason: "Closed shadow-root DOM access is unsupported. Use explicitly requested visual evidence." });
+  let frame = page.mainFrame();
+  for (const selector of s.frames ?? []) {
+    const nodes = await frame.locator(css(selector, s.shadow)).elementHandles();
+    try {
+      if (nodes.length === 0) return undefined;
+      if (nodes.length !== 1 || !(await nodes[0]!.evaluate(e => e.nodeType === 1 && /^(IFRAME|FRAME)$/.test((e as Element).tagName)))) {
+        throw new BrowserError({ code: "unsupported_scope", reason: "The frame path did not identify exactly one frame. Recovery capture cannot establish its scope." });
+      }
+      const child = await nodes[0]!.contentFrame();
+      if (!child) return undefined;
+      frame = child;
+    } finally { await Promise.allSettled(nodes.map(node => node.dispose())); }
   }
+  return { frame, locator: frame.locator(css(s.selector ?? "body", s.shadow)) };
+}
+function suspendRecoveryCapture(journal: Journal): void {
+  if (!journal.events().some(e => e.type === "recovery.capture_suspended")) {
+    journal.append("recovery.capture_suspended", {
+      reason: "Environment-backed input may be moved or transformed by the page. Automatic recovery-value capture is disabled for this run; prior snapshots and explicit non-secret input intents remain available.",
+    });
+  }
+}
+async function captureFields(page: Page, journal: Journal, save = true): Promise<void> {
+  const task = journal.meta().task;
+  const fields = task.recovery?.fields ?? [];
+  if (fields.length === 0) return;
+  const steps = [...(task.steps ?? []), ...(task.recovery?.reconstruct ?? [])];
+  const events = journal.events();
+  const suspended = events.some(e => e.type === "recovery.capture_suspended");
+  // Old receipts cannot prove which environment-input boundary was crossed.
+  const legacy = steps.some(s => s.valueFromEnv !== undefined) && events.some(e =>
+    e.type === "action.start" && e.data.engine === "playwright" && e.data.recoveryGuarded !== true);
+  if (suspended || legacy) {
+    if (!suspended) suspendRecoveryCapture(journal);
+    save = false; // Still reject known protected aliases, but never read new page values.
+  }
+  const protectedSteps = steps.filter(s => s.valueFromEnv !== undefined && s.selector !== undefined);
+  // These values never enter browser evaluation arguments. A page may redefine
+  // its prototypes; equality against environment secrets belongs in this process.
+  const protectedValues = new Set(protectedSteps
+    .map(step => process.env[step.valueFromEnv!])
+    .filter((value): value is string => value !== undefined && value.length > 0));
+  const handles: ElementHandle[] = [];
+  try {
+    const candidates: Array<{ field: (typeof fields)[number]; node: ElementHandle<Element>; frame: Frame }> = [];
+    for (const field of fields) {
+      const scope = await captureScope(page, field);
+      if (!scope) continue;
+      const nodes = await scope.locator.elementHandles();
+      handles.push(...nodes);
+      if (nodes.length !== 1) continue;
+      // Locator matches are Elements; Playwright declares their handles as Node.
+      const node = nodes[0]! as ElementHandle<Element>;
+      const frame = await node.ownerFrame();
+      if (frame) candidates.push({ field, node, frame });
+    }
+    if (candidates.length === 0) return;
+
+    // Pin recovery nodes first, then resolve each protected frame path once.
+    // Cache only this snapshot's scopes, never protected node identities/values.
+    const protectedFrames = new Map<string, Frame | undefined>();
+    const protectedLocators = new Map<Frame, Locator[]>();
+    for (const step of protectedSteps) {
+      const key = JSON.stringify([step.frames ?? [], step.shadow ?? "none"]);
+      if (!protectedFrames.has(key)) protectedFrames.set(key, (await captureScope(page, step))?.frame);
+      const frame = protectedFrames.get(key);
+      if (!frame) continue;
+      const locators = protectedLocators.get(frame) ?? [];
+      locators.push(frame.locator(css(step.selector!, step.shadow)));
+      protectedLocators.set(frame, locators);
+    }
+
+    for (const { field: f, node, frame } of candidates) {
+      const current = protectedLocators.get(frame) ?? [];
+      if (!save) {
+        for (const protectedLocator of current) {
+          const overlaps = await protectedLocator.evaluateAll((elements, target) => {
+            for (let i = 0; i < elements.length; i++) if (elements[i] === target) return true;
+            return false;
+          }, node);
+          if (overlaps) {
+            throw new BrowserError({ code: "retention_forbidden", reason: "An environment-backed control overlaps the recovery allowlist. Remove it and use its environment reference for reconstruction." });
+          }
+        }
+        continue;
+      }
+
+      // Resolve protected selectors with Playwright's shadow-aware semantics,
+      // reject identity/sensitivity, then read that exact pinned node atomically.
+      let protectedLocator = current[0];
+      for (const next of current.slice(1)) protectedLocator = protectedLocator!.or(next);
+      const result: { actual: string; protected?: boolean; error?: string; available?: boolean } = protectedLocator
+        ? await protectedLocator.evaluateAll((elements, target) => {
+            const element = target as unknown as Element;
+            for (let i = 0; i < elements.length; i++) if (elements[i] === element) return { actual: "", protected: true };
+            // A page-controlled value getter can change these attributes. Check
+            // them before any value access, including environment comparisons.
+            const sensitive = element.matches('input[type=password], input[type=file], [autocomplete="one-time-code"]');
+            if (sensitive) return { actual: "", error: "Sensitive control values cannot be collected." };
+            if (!("value" in element)) return { actual: "", error: "Target is not a value control." };
+            const rect = element.getBoundingClientRect();
+            const visible = !!rect.width && !!rect.height && element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+            if (!visible) return { actual: "", available: false };
+            return { actual: String((element as HTMLInputElement).value) };
+          }, node)
+        : await node.evaluate(readElement, { kind: "value" });
+      if (result.protected || protectedValues.has(result.actual)) {
+        throw new BrowserError({ code: "retention_forbidden", reason: "An environment-backed control overlaps the recovery allowlist. Remove it and use its environment reference for reconstruction." });
+      }
+      if (result.error) throw new BrowserError({ code: "retention_forbidden", reason: "A recovery allowlist includes a sensitive or unsupported control. Remove it; no value was saved." });
+      if (result.available === false) continue;
+      journal.saveField(f.key, result.actual, "observed");
+    }
+  } finally { await Promise.allSettled(handles.map(handle => handle.dispose())); }
 }
 function valueFor(s: Step, journal: Journal, retained = journal.recoveryFields()): string {
   if (s.valueFromInput) {
@@ -116,6 +225,7 @@ async function runSteps(page: Page, journal: Journal, job: PageJob, snap: () => 
       throw new BrowserError({ code: "ambiguous_target", reason: "Action requires one matching control. Inspect the scoped page; no action was dispatched." });
     }
     if (!rebuilding) await captureFields(page, journal);
+    else if (s.valueFromEnv) await captureFields(page, journal, false);
     if (s.kind === "fill") for (const f of journal.meta().task.recovery?.fields ?? []) {
       if (f.selector === s.selector && JSON.stringify(f.frames) === JSON.stringify(s.frames) && f.shadow === s.shadow && !s.valueFromEnv) {
         const result = await locator.evaluate(readElement, { kind: "value" });
@@ -130,8 +240,12 @@ async function runSteps(page: Page, journal: Journal, job: PageJob, snap: () => 
     let actionId: string | undefined;
     if (s.kind !== "checkpoint") {
       if (remaining(journal.state()).actions <= 0) throw new BrowserError({ code: "budget_exhausted", reason: "Action budget exhausted." });
+      // Selectors, node identities and exact-value matching cannot follow an
+      // arbitrary formatter/rerender. Persist this boundary before dispatch so
+      // resume, reconstruction and a Jev/Midscene handoff cannot forget it.
+      if (s.valueFromEnv) suspendRecoveryCapture(journal);
       actionId = randomUUID();
-      journal.append("action.start", { id: actionId, kind: s.kind, safeToRepeat: s.safeToRepeat === true, step: index, selector: s.selector, frames: s.frames, engine: "playwright" });
+      journal.append("action.start", { id: actionId, kind: s.kind, safeToRepeat: s.safeToRepeat === true, step: index, selector: s.selector, frames: s.frames, engine: "playwright", recoveryGuarded: true });
     }
     switch (s.kind) {
       case "navigate": {

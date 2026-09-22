@@ -249,7 +249,11 @@ export function runTask(input: Task, testing = false) {
     const config = yield* io(host.configuration);
     const profile = yield* io(() => fs.promises.realpath(config.profileDir));
     const { journal, duplicate } = yield* sync(() => createRun(host.home(), task, testing, profile));
-    if (duplicate) return { ...summary(journal.state()), duplicate: true };
+    // Only preflight failures are retryable through the idempotency key. Once
+    // execution started (or an unknown event exists), recovery must be explicit.
+    if (duplicate && !journal.events().every(e => e.type === "created" || e.type === "preflight.failed")) {
+      return { ...summary(journal.state()), duplicate: true };
+    }
     return yield* io(host.connect).pipe(Effect.flatMap(session => attempt(journal, session, "new")), Effect.tap(result => sync(() => {
       if (task.recipe && ["precondition_failed", "ambiguous_target", "assertion_failed"].includes(journal.state().reasonCode)) quarantineRecipe(host.home(), task.recipe, journal.state().reasonCode);
     })), Effect.catchTag("BrowserError", e => sync(() => {

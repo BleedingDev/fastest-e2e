@@ -16,6 +16,27 @@ export async function fixture() {
   const route = (req,res) => {
     res.setHeader('Content-Type','text/html; charset=utf-8');
     if (req.url.startsWith('/save')) { writes++; res.end('saved'); return; }
+    if (req.url.startsWith('/recovery-race')) { res.end(`<!doctype html><html><body>
+      <h1>Recovery race</h1><input id="public" class="active-input" value="public-sentinel"><input id="token">
+      <script>
+        let switched=false;
+        const patch=proto=>{const original=proto.querySelectorAll;proto.querySelectorAll=function(selector){
+          const result=original.call(this,selector);
+          if(selector==='.active-input'&&!switched&&document.querySelector('#token').value){
+            switched=true;document.querySelector('#public').classList.remove('active-input');document.querySelector('#token').classList.add('active-input');
+          }
+          return result;
+        }};
+        patch(Document.prototype);patch(Element.prototype);patch(ShadowRoot.prototype);
+      </script></body></html>`); return; }
+    if (req.url.startsWith('/protected-replacement-race')) { res.end(`<!doctype html><html><body>
+      <h1>Protected replacement race</h1><input id="public" class="active-input" value="public-sentinel"><input id="token">
+      <script>
+        document.querySelector('#token').addEventListener('input', event => {
+          const current=event.currentTarget,next=current.cloneNode(true);
+          next.classList.add('active-input');document.querySelector('#public').classList.remove('active-input');current.replaceWith(next);
+        }, { once:true });
+      </script></body></html>`); return; }
     if (req.url.startsWith('/nested')) { res.end('<h2>Nested</h2><input id="nestedName"><button onclick="document.querySelector(\'output\').textContent=\'Nested saved\'">Save</button><output></output>'); return; }
     if (req.url.startsWith('/frame')) { res.end(`<h2>Remote frame</h2><input id="frameName"><button id="frameSave" onclick="document.querySelector('output').textContent='Frame saved'">Save</button><output></output><iframe id="nested" src="${url}/nested"></iframe>`); return; }
     res.end(`<!doctype html><html><head><title>Fixture</title><style>body{font:16px sans-serif}input,button{margin:8px}iframe{width:600px;height:210px}canvas{border:1px solid}</style></head><body>
@@ -52,7 +73,7 @@ export async function fixture() {
     child = spawn(chromePath, [`--user-data-dir=${profile}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', '--headless=new', '--no-first-run', '--no-default-browser-check', '--site-per-process', '--window-size=1280,900', ...(process.getuid?.()===0 ? ['--no-sandbox'] : []), 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
     child.stderr.on('data', chunk => { diagnostic = (diagnostic + chunk.toString()).slice(-8_192); });
     child.once('error', error => { spawnError = error; });
-    const deadline = Date.now() + 15_000;
+    const deadline = Date.now() + 30_000;
     let last;
     while (Date.now() < deadline && alive() && !spawnError) {
       try { return await connect(); } catch (error) { last = error; }
