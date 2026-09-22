@@ -24,6 +24,8 @@ A run journal persists work, not browser memory. It flushes intent before dispat
 
 [recover-form.test.json](../examples/recover-form.test.json) shows a half-filled form. Only use `safeToRepeat` where the application's behavior justifies it. Typing and navigation may autosave or submit changes. Recovery freezes retained inputs before navigation, so an empty replacement form cannot erase them. Secrets, files, one-time codes, and opaque editor state are not recoverable payloads; re-entry may be necessary.
 
+Recovery allowlists must remain non-sensitive throughout the task. The prototype does not track secret-derived values across application formatting and replacement controls: if the original protected selector disappears, a transformed secret exposed through an allowlisted alias can be retained. Exclude those fields; when their contents cannot be guaranteed non-sensitive, omit `recovery.fields` and use local environment references for reconstruction. This is a known limitation, not a guarantee of secret redaction.
+
 Declare `recovery.reconcile` and `reconcileOutcome` before a possibly uncertain effect. `reconcile --run ID` evaluates that UI evidence. For a completed deterministic dispatch, matching evidence advances its cursor once instead of resubmitting. For a completed autonomous dispatch without a cursor, continuation stays blocked rather than guessing.
 
 After a browser crash, a new observation task can inspect application state in the same profile; `reconcile --run ORIGINAL --from-run OBSERVER` uses its live page with the original expectations. This does not retarget or restore the original run. Evidence of absence must be strong enough for the application; a missing toast is not proof that Save did nothing.

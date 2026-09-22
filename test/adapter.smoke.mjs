@@ -4,7 +4,7 @@ import {fixture} from './support/chrome.mjs';
 import {mcpClient} from './support/mcp-client.mjs';
 import {Cdp,checkpoint} from '../dist/cdp.js';
 import {createRun,atomic} from '../dist/journal.js';
-import {attachPage,pageJob,checkOne} from '../dist/page-worker.js';
+import {attachPage,pageJob,checkOne,pollChecks} from '../dist/page-worker.js';
 import {legacyExpression} from '../dist/dom.js';
 import {screenshotRun} from '../dist/workflows.js';
 import path from 'node:path';
@@ -28,6 +28,23 @@ try {
  await assert.rejects(()=>checkOne(connected.page,{kind:'count',frames:['#missing'],selector:'button',value:'0'}),/frame path/);
  assert.equal((await checkOne(connected.page,{kind:'text',selector:'#hidden',value:'<not visible>'})).passed,false);
  assert.equal((await raw.evaluate(sid,legacyExpression([{kind:'text',selector:'#missing',value:'matching elements'}])))[0].passed,false);checks.push('unsupported scopes and diagnostic sentinels cannot pass');
+ // Missing elements are not visible; missing scopes and ambiguous matches remain unknown.
+ for(const scope of [{},{frames:['#frame']},{frames:['#frame','#nested']},{shadow:'open'}]) for(const value of ['false','true']) {
+  const c={kind:'visible',selector:'#absent',value,...scope}, result=await checkOne(connected.page,c);
+  assert.equal(result.actual,'false');assert.equal(result.passed,value==='false');
+  if(!scope.frames && !scope.shadow)assert.deepEqual(result,(await raw.evaluate(sid,legacyExpression([c])))[0]);
+ }
+ assert.equal((await checkOne(connected.page,{kind:'visible',selector:'#hidden',value:'false'})).passed,true);
+ for(const value of ['false','true'])assert.equal((await checkOne(connected.page,{kind:'visible',selector:'h1, #name',value})).passed,false);
+ for(const kind of ['text','value','checked'])assert.equal((await checkOne(connected.page,{kind,selector:'#absent',value:'<0 matching elements>'})).passed,false);
+ assert.equal((await checkOne(connected.page,{kind:'count',selector:'#absent',value:'0'})).passed,true);
+ await assert.rejects(()=>checkOne(connected.page,{kind:'visible',frames:['#missing'],selector:'button',value:'false'}),/frame path/);
+ await assert.rejects(()=>checkOne(connected.page,{kind:'visible',shadow:'closed',selector:'button',value:'false'}),/Closed shadow/);
+ await connected.page.evaluate(()=>{const e=document.createElement('span');e.id='transient';e.textContent='Busy';document.body.append(e)});
+ const disappears={kind:'visible',selector:'#transient',value:'false'};
+ assert.equal((await checkOne(connected.page,disappears)).passed,false);
+ const waiting=pollChecks(connected.page,[disappears],3000);await connected.page.locator('#transient').evaluate(e=>e.remove());
+ assert.equal((await waiting)[0].passed,true);checks.push('negative visibility, legacy parity, and disappearance polling');
  const extracted=await pageJob({root:f.directory,runId:journal.runId,session:f.session,targetId,operation:'extract',extract:[{name:'good',kind:'value',selector:'#inside',shadow:'open'},{name:'missing',kind:'value',selector:'#absent'}],timeoutMs:10000},new AbortController().signal);assert.equal(extracted.fields.good.value,'Shadow');assert.ok(extracted.fields.missing.error);assert.equal(extracted.complete,false);checks.push('partial extraction preserves valid fields');
  const first=await Effect.runPromise(screenshotRun({runId:journal.runId}));assert.ok(first.width<=1800);assert.equal(first.scale.x,first.width/first.css.width);
  await raw.send('Emulation.setDeviceMetricsOverride',{width:1280,height:800,deviceScaleFactor:2,mobile:false},sid);
