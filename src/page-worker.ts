@@ -84,7 +84,7 @@ async function captureScope(page: Page, s: Scoped): Promise<{ frame: Frame; loca
     const nodes = await frame.locator(css(selector, s.shadow)).elementHandles();
     try {
       if (nodes.length === 0) return undefined;
-      if (nodes.length !== 1 || !(await nodes[0]!.evaluate(e => /^(IFRAME|FRAME)$/.test(e.tagName)))) {
+      if (nodes.length !== 1 || !(await nodes[0]!.evaluate(e => e.nodeType === 1 && /^(IFRAME|FRAME)$/.test((e as Element).tagName)))) {
         throw new BrowserError({ code: "unsupported_scope", reason: "The frame path did not identify exactly one frame. Recovery capture cannot establish its scope." });
       }
       const child = await nodes[0]!.contentFrame();
@@ -113,7 +113,8 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
       const nodes = await scope.locator.elementHandles();
       handles.push(...nodes);
       if (nodes.length !== 1) continue;
-      const node = nodes[0]!;
+      // Locator matches are Elements; Playwright declares their handles as Node.
+      const node = nodes[0]! as ElementHandle<Element>;
       const frame = await node.ownerFrame();
       if (!frame) continue;
       const current: Locator[] = [];
