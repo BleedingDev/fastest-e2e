@@ -52,3 +52,6 @@ jobs:
       - name: Recovery capture isolation and late frames
         if: always() && !cancelled()
         run: timeout 120s node test/recovery-capture.smoke.mjs
+      - name: Environment retention across dispatch and handoff
+        if: always() && !cancelled()
+        run: timeout 90s node test/environment-retention.smoke.mjs

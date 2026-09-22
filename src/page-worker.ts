@@ -94,12 +94,28 @@ async function captureScope(page: Page, s: Scoped): Promise<{ frame: Frame; loca
   }
   return { frame, locator: frame.locator(css(s.selector ?? "body", s.shadow)) };
 }
+function suspendRecoveryCapture(journal: Journal): void {
+  if (!journal.events().some(e => e.type === "recovery.capture_suspended")) {
+    journal.append("recovery.capture_suspended", {
+      reason: "Environment-backed input may be moved or transformed by the page. Automatic recovery-value capture is disabled for this run; prior snapshots and explicit non-secret input intents remain available.",
+    });
+  }
+}
 async function captureFields(page: Page, journal: Journal, save = true): Promise<void> {
   const task = journal.meta().task;
   const fields = task.recovery?.fields ?? [];
   if (fields.length === 0) return;
-  const protectedSteps = [...(task.steps ?? []), ...(task.recovery?.reconstruct ?? [])]
-    .filter(s => s.valueFromEnv !== undefined && s.selector !== undefined);
+  const steps = [...(task.steps ?? []), ...(task.recovery?.reconstruct ?? [])];
+  const events = journal.events();
+  const suspended = events.some(e => e.type === "recovery.capture_suspended");
+  // Old receipts cannot prove which environment-input boundary was crossed.
+  const legacy = steps.some(s => s.valueFromEnv !== undefined) && events.some(e =>
+    e.type === "action.start" && e.data.engine === "playwright" && e.data.recoveryGuarded !== true);
+  if (suspended || legacy) {
+    if (!suspended) suspendRecoveryCapture(journal);
+    save = false; // Still reject known protected aliases, but never read new page values.
+  }
+  const protectedSteps = steps.filter(s => s.valueFromEnv !== undefined && s.selector !== undefined);
   // These values never enter browser evaluation arguments. A page may redefine
   // its prototypes; equality against environment secrets belongs in this process.
   const protectedValues = new Set(protectedSteps
@@ -224,8 +240,12 @@ async function runSteps(page: Page, journal: Journal, job: PageJob, snap: () => 
     let actionId: string | undefined;
     if (s.kind !== "checkpoint") {
       if (remaining(journal.state()).actions <= 0) throw new BrowserError({ code: "budget_exhausted", reason: "Action budget exhausted." });
+      // Selectors, node identities and exact-value matching cannot follow an
+      // arbitrary formatter/rerender. Persist this boundary before dispatch so
+      // resume, reconstruction and a Jev/Midscene handoff cannot forget it.
+      if (s.valueFromEnv) suspendRecoveryCapture(journal);
       actionId = randomUUID();
-      journal.append("action.start", { id: actionId, kind: s.kind, safeToRepeat: s.safeToRepeat === true, step: index, selector: s.selector, frames: s.frames, engine: "playwright" });
+      journal.append("action.start", { id: actionId, kind: s.kind, safeToRepeat: s.safeToRepeat === true, step: index, selector: s.selector, frames: s.frames, engine: "playwright", recoveryGuarded: true });
     }
     switch (s.kind) {
       case "navigate": {
