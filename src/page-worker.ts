@@ -57,7 +57,6 @@ export async function checkOne(page: Page, c: Check): Promise<Data> {
   else {
     const count = await locator.count();
     if (c.kind === "count") actual = String(count);
-    else if (c.kind === "visible" && count === 0) actual = "false";
     else if (count !== 1) { actual = `<${count} matching elements>`; available = false; }
     else {
       const value = await locator.evaluate(readElement, c);
@@ -107,8 +106,9 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
     .filter((value): value is string => value !== undefined && value.length > 0));
   const handles: ElementHandle[] = [];
   try {
-    for (const f of fields) {
-      const scope = await captureScope(page, f);
+    const candidates: Array<{ field: (typeof fields)[number]; node: ElementHandle<Element>; frame: Frame }> = [];
+    for (const field of fields) {
+      const scope = await captureScope(page, field);
       if (!scope) continue;
       const nodes = await scope.locator.elementHandles();
       handles.push(...nodes);
@@ -116,15 +116,26 @@ async function captureFields(page: Page, journal: Journal, save = true): Promise
       // Locator matches are Elements; Playwright declares their handles as Node.
       const node = nodes[0]! as ElementHandle<Element>;
       const frame = await node.ownerFrame();
-      if (!frame) continue;
-      const current: Locator[] = [];
-      // Resolve protection after pinning the candidate. Missing future frames
-      // are skipped, but malformed or ambiguous scopes still fail closed.
-      for (const step of protectedSteps) {
-        const protectedScope = await captureScope(page, step);
-        if (protectedScope?.frame === frame) current.push(protectedScope.locator);
-      }
+      if (frame) candidates.push({ field, node, frame });
+    }
+    if (candidates.length === 0) return;
 
+    // Pin recovery nodes first, then resolve each protected frame path once.
+    // Cache only this snapshot's scopes, never protected node identities/values.
+    const protectedFrames = new Map<string, Frame | undefined>();
+    const protectedLocators = new Map<Frame, Locator[]>();
+    for (const step of protectedSteps) {
+      const key = JSON.stringify([step.frames ?? [], step.shadow ?? "none"]);
+      if (!protectedFrames.has(key)) protectedFrames.set(key, (await captureScope(page, step))?.frame);
+      const frame = protectedFrames.get(key);
+      if (!frame) continue;
+      const locators = protectedLocators.get(frame) ?? [];
+      locators.push(frame.locator(css(step.selector!, step.shadow)));
+      protectedLocators.set(frame, locators);
+    }
+
+    for (const { field: f, node, frame } of candidates) {
+      const current = protectedLocators.get(frame) ?? [];
       if (!save) {
         for (const protectedLocator of current) {
           const overlaps = await protectedLocator.evaluateAll((elements, target) => {
