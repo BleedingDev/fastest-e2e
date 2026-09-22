@@ -169,6 +169,32 @@ try {
   }
   await scenario('Required assertion scopes remain strict', { steps: [] }, '<h1>No iframe</h1>', async ({ page }) => {
     await assert.rejects(() => checkOne(page, { kind: 'count', frames: ['#missing'], selector: 'input', value: '0' }), error => error.code === 'unsupported_scope');
+    assert.equal((await checkOne(page, { kind: 'visible', selector: '#missing', value: 'false' })).passed, true);
+  });
+
+  const publicFields = Array.from({ length: 8 }, (_, i) => ({ key: `public${i}`, selector: `#public${i}` }));
+  await scenario('Protected frame traversal is shared within, not across, snapshots', {
+    steps: Array.from({ length: 20 }, (_, i) => ({ kind: 'fill', valueFromEnv: key,
+      selector: i % 2 ? '#nestedName' : '#frameName', frames: i % 2 ? ['#remote', '#nested'] : ['#remote'] })),
+    recovery: { fields: publicFields },
+  }, remote => publicFields.map((_, i) => `<input id="public${i}" value="public-${i}">`).join('') + `<iframe id="remote" src="${remote}"></iframe>`, async ({ page, journal, invoke }) => {
+    // Count real frame-path lookups, not timing: added fields/duplicate steps
+    // must not multiply browser round trips. The second snapshot must be fresh.
+    const prototype = Object.getPrototypeOf(page.mainFrame()), original = prototype.locator;
+    let queries = 0;
+    prototype.locator = function (selector, ...options) {
+      if (selector === 'css:light=#remote' || selector === 'css:light=#nested') queries++;
+      return Reflect.apply(original, this, [selector, ...options]);
+    };
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        queries = 0;
+        await invoke();
+        assert.equal(queries, 3, 'Resolve the two distinct paths once each per snapshot');
+        assert.equal(Object.keys(journal.recoveryFields()).length, 8);
+      }
+    } finally { prototype.locator = original; }
+    assertNotRetained(journal);
   });
 } finally {
   await raw.close(); await f.cleanup();

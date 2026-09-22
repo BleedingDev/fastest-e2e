@@ -57,6 +57,7 @@ export async function checkOne(page: Page, c: Check): Promise<Data> {
   else {
     const count = await locator.count();
     if (c.kind === "count") actual = String(count);
+    else if (c.kind === "visible" && count === 0) actual = "false";
     else if (count !== 1) { actual = `<${count} matching elements>`; available = false; }
     else {
       const value = await locator.evaluate(readElement, c);
