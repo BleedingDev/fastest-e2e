@@ -49,3 +49,6 @@ jobs:
       - name: Review regressions for retention and preflight
         if: always() && !cancelled()
         run: timeout 90s node test/review-followups.smoke.mjs
+      - name: Recovery capture isolation and late frames
+        if: always() && !cancelled()
+        run: timeout 120s node test/recovery-capture.smoke.mjs
